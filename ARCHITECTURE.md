@@ -255,6 +255,7 @@ order give the same roles on any host.
 | Game Master, Mastra, Gemma                        | Phase 3                                                          |
 | Safety validator                                  | Phase 4, in `packages/safety`; the engine does not depend on it  |
 | Multiplayer command boundary                      | Phase 5A: `submitPlayerAction`, actor supplied by the caller     |
+| In-memory authoritative session holder            | Phase 5B: `@touchgrass/game-session`, one object per game        |
 | Realtime transport, persistence                   | Later                                                            |
 
 ---
@@ -341,10 +342,43 @@ action goes straight to the engine and never calls a model. A Game Master propos
 schema, the engine's legality check and the safety validator first. Nothing connects the two: a
 player action does not trigger a Game Master turn.
 
-**One authoritative state per game.** The engine is pure and holds nothing. The future holder of a
-game's state must feed it one input at a time and keep what comes back; a second message that
+**One authoritative state per game.** The engine is pure and holds nothing. Whatever holds a game's
+state must feed the engine one input at a time and keep what comes back; a second message that
 arrived at the same moment is judged against the updated state and refused if it is no longer legal.
-No lock, queue or revision field exists yet, and none is needed until there is a transport.
+
+**The in-memory state holder (Phase 5B).** `@touchgrass/game-session` is that holder: one object
+per game, created with `createGameSession(command, ctx)`.
+
+```
+transport (not built)                 GameSession                         engine (pure)
+---------------------                 -----------                         -------------
+actor id, client intent, time   →     submitAction    →   submitPlayerAction
+time                            →     advanceTime     →   advanceTime
+host command (trusted caller)   →     applyCommand    →   reduce
+                                      getState        ←   the one authoritative GameState
+```
+
+- **It owns exactly one state and never takes one from a caller.** The initial state is built by the
+  engine from a `CREATE_SESSION` command. No method has a state parameter.
+- **It replaces the state only after the engine accepts.** A refusal leaves the stored state the
+  very same object it was.
+- **It is synchronous.** Each operation reads the state, calls one engine function and stores the
+  result without yielding, so operations on a session cannot interleave. There is no queue, lock,
+  promise or worker.
+- **Callers cannot write to the state.** Each stored state is frozen all the way down; `getState()`
+  returns it for reading.
+- **Sessions share nothing.** Each is its own closure, and the package has no module-level state and
+  no registry: holding the object is the only way to reach a session.
+- **Time is supplied.** `advanceTime(ctx)` ends rounds when the caller says what time it is. Nothing
+  calls it automatically, so a game left alone does not progress.
+- **`applyCommand` is a trusted control-plane call.** Host commands name no actor and the game
+  records no host. A player's message cannot express one, and nothing yet authorises who may call
+  it. That has to be settled before any transport exposes it.
+- **It returns what a broadcaster would send** (the new state and the history entries added), and
+  sends nothing itself.
+
+It is in memory only. A process restart loses every game; there is no persistence, no restore from a
+saved state, no duplicate-message detection, and no connection to the Game Master.
 
 The intended shape of the transport, not yet built, and the constraint it has to respect:
 
@@ -574,6 +608,7 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)             | **Complete** |
 | Phase 4 | Deterministic safety validator between domain validation and the engine                                                 | **Complete** |
 | 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                             | **Complete** |
+| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                              | **Complete** |
 | Later   | Realtime transport (WebSockets + Redis), calling the Game Master during a game, MongoDB persistence, Sentry, deployment | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a

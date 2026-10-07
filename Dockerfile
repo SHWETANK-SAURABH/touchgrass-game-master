@@ -13,6 +13,7 @@ COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/game-definitions/package.json ./packages/game-definitions/
 COPY packages/game-engine/package.json ./packages/game-engine/
+COPY packages/game-session/package.json ./packages/game-session/
 COPY packages/safety/package.json ./packages/safety/
 COPY packages/ai/package.json ./packages/ai/
 RUN npm ci

@@ -262,6 +262,11 @@ A game has one authoritative state. The engine is a pure function, so it does no
 and cannot serialise access to it; whoever holds it must give the engine one input at a time and keep
 the state that comes back.
 
+That holder now exists as a separate package, `@touchgrass/game-session` (Phase 5B): an in-memory
+object that owns one game's state, calls `submitPlayerAction`, `advanceTime` and `reduce`, and
+replaces its state only when the engine accepts. Nothing mutable was added to the engine. See
+[its README](../game-session/README.md).
+
 - Two messages that arrive together are processed one after the other. The second is judged against
   the state the first produced, and is refused by the ordinary rules if it is no longer legal: a
   tagger's second tag is refused because they are now a runner, and a second report of the same find

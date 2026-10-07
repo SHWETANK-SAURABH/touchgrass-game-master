@@ -33,7 +33,8 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 > rules, not a guarantee that play is safe — see [SAFETY.md](./SAFETY.md).
 >
 > Phase 5A establishes the deterministic multiplayer command boundary. Transport is implemented
-> later. A client message says what a player did and never who; the engine is given the actor
+> later. Phase 5B adds an in-memory session object that holds one game's authoritative state and
+> applies inputs to it one at a time; it is not a server and nothing connects to it yet. A client message says what a player did and never who; the engine is given the actor
 > separately and decides what the action means. **Not built yet:** realtime multiplayer (no
 > WebSockets, no connections, no broadcast), anything in the app that calls the Game Master,
 > persistence, and a game UI. See [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
@@ -113,6 +114,7 @@ packages/
   shared/                 Result, seeded RNG, clock, ids, logger, env schema
   game-definitions/       GameDefinition schema + the five games, as data
   game-engine/            Deterministic engine: actions, events, time, scoring, winners
+  game-session/           In-memory holder of one game's authoritative state
   safety/                 Hazard taxonomy, policy, and the deterministic safety validator
   ai/                     ModelProvider + adapters, and the Game Master (Mastra agent)
 ```
@@ -124,6 +126,7 @@ Imports between workspaces, as they are in the code today (no cycles):
 | `shared`           | nothing                                               |
 | `game-definitions` | nothing                                               |
 | `game-engine`      | `game-definitions`, `shared`                          |
+| `game-session`     | `game-engine`, `shared`                               |
 | `safety`           | `game-definitions`, `game-engine`, `shared`           |
 | `ai`               | `game-definitions`, `game-engine`, `safety`, `shared` |
 | `apps/web`         | `ai`, `game-definitions`, `safety`, `shared`          |
