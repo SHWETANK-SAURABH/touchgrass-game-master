@@ -5,7 +5,8 @@ Game rules as **data**, not code. Five games: `tag`, `hide-and-seek`, `ice-and-f
 
 Each definition declares everything the rest of the system needs:
 
-- headcount, duration, space requirement, intensity, equipment
+- headcount (Tag is 2–4; a solo game may declare a minimum of 1), duration, space requirement,
+  intensity, equipment
 - roles with minimums, maximums, and exactly one overflow role
 - named phases in order
 - `allowedEventKinds` — the subset of the seven event kinds the Game Master may propose here

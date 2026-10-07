@@ -81,30 +81,3 @@ export function assignRoles(
 
   return ok(assignment);
 }
-
-/** Verifies a proposed single-player role change against the definition's maxima. */
-export function canHoldRole(
-  definition: GameDefinition,
-  roleId: string,
-  currentHolderCount: number,
-): Result<true, EngineError> {
-  const role = definition.roles.find((candidate) => candidate.id === roleId);
-  if (!role) {
-    return err(
-      engineError('ROLE_CONSTRAINT_VIOLATED', `Game "${definition.id}" has no role "${roleId}".`, {
-        gameId: definition.id,
-        roleId,
-      }),
-    );
-  }
-  if (role.max !== undefined && currentHolderCount >= role.max) {
-    return err(
-      engineError(
-        'ROLE_CONSTRAINT_VIOLATED',
-        `Role "${roleId}" already holds its maximum of ${role.max}.`,
-        { gameId: definition.id, roleId, max: role.max },
-      ),
-    );
-  }
-  return ok(true);
-}

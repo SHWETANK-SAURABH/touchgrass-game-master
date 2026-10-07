@@ -17,9 +17,11 @@ AI proposes  →  Zod validates  →  Safety validates  →  Engine executes  �
 The model never touches game state. That is the whole architecture in one line, and the reason the
 pieces are split the way they are.
 
-> **Status: Phase 1 — foundation.** The contracts, the model abstraction, the deterministic engine
-> core, the game catalogue, and the hazard taxonomy are implemented and tested. The Game Master
-> agent, the safety validator, realtime multiplayer, and persistence are **not** built yet. See
+> **Status: Phase 1 — foundation.** The contracts, the model abstraction, the session-lifecycle
+> core of the engine, the game catalogue, and the hazard taxonomy are implemented and tested.
+> **Phase 2** builds the full deterministic game engine (player actions, rounds, scoring, win
+> conditions). **Phase 3** adds the Game Master (Mastra + Gemma). The safety validator, realtime
+> multiplayer, and persistence come after that. See
 > [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---
@@ -100,18 +102,24 @@ packages/
   ai/                     ModelProvider port, two adapters, structured generation
 ```
 
-Dependencies run strictly one way, with no cycles:
+Imports between workspaces, as they are in the code today (no cycles):
 
-```
-shared → game-definitions → game-engine → safety → ai → apps/web
-```
+| Workspace          | Imports                                      |
+| ------------------ | -------------------------------------------- |
+| `shared`           | nothing                                      |
+| `game-definitions` | nothing                                      |
+| `game-engine`      | `game-definitions`, `shared`                 |
+| `safety`           | `game-definitions`                           |
+| `ai`               | `shared` (and `game-engine` in tests only)   |
+| `apps/web`         | `ai`, `game-definitions`, `safety`, `shared` |
 
-The engine owns the proposal contract that the AI package must satisfy, so the engine can be read,
-tested, and trusted without opening a line of AI code.
+The engine imports nothing from `ai` or `safety`, so it can be read, tested, and trusted without
+opening a line of AI code. The proposal schema the model must satisfy lives in the engine; the AI
+package's tests validate generated output against it.
 
 There is deliberately **no `realtime/` or `database/` package yet.** An empty package that exists to
-make a diagram look complete is worse than an honest gap — those arrive in Phase 3, with the code
-that needs them.
+make a diagram look complete is worse than an honest gap — those arrive in a later phase, with the
+code that needs them.
 
 ---
 

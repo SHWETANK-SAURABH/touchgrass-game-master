@@ -4,7 +4,7 @@ import { hazardCategoryIdSchema, hazardSeveritySchema } from './hazards';
 /**
  * The shape of a safety decision.
  *
- * Defined here, in this phase, because it is the interface the Phase 2 validator
+ * Defined here, in this phase, because it is the interface the planned validator
  * must satisfy and the shape the engine and the host UI will consume. Fixing it
  * now means the validator is written against a known contract rather than
  * inventing one as it goes.
@@ -54,7 +54,7 @@ export const safetyVerdictSchema = z.object({
 export type SafetyVerdict = z.infer<typeof safetyVerdictSchema>;
 
 /**
- * The validator's signature, fixed now and implemented in Phase 2.
+ * The validator's signature, fixed now and implemented in a later phase.
  *
  * Synchronous and total on purpose. A safety check that can await is a safety
  * check that can hang, time out, and get skipped under load — so the contract

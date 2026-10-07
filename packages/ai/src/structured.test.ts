@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { gameEventProposalSchema, gameMasterTurnSchema } from '@touchgrass/game-engine';
 import { describeIssues, generateStructured, toJsonSchema } from './structured';
+import { ModelProviderError } from './provider/errors';
 import type {
   GenerateJsonRequest,
   GenerateJsonResult,
@@ -42,6 +43,7 @@ function scriptedProvider(completions: unknown[]): ModelProvider & {
       calls.push(request);
       const completion = completions[Math.min(index, completions.length - 1)];
       index += 1;
+      if (completion instanceof Error) return Promise.reject(completion);
       return Promise.resolve({
         data: completion,
         raw: JSON.stringify(completion),
@@ -195,6 +197,51 @@ describe('generateStructured', () => {
     expect(result.error.issues.length).toBeGreaterThan(0);
     expect(result.error.raw).toContain('MODIFIER');
     expect(provider.calls).toHaveLength(3);
+  });
+
+  it('treats a non-JSON completion as a failed attempt and repairs it', async () => {
+    const notJson = new ModelProviderError('OUTPUT_NOT_JSON', 'not json', {
+      raw: 'Sure! Here is your twist:',
+    });
+    const provider = scriptedProvider([notJson, VALID_MODIFIER]);
+    const result = await generateStructured({
+      provider,
+      schema: gameEventProposalSchema,
+      messages: MESSAGES,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    const repairTurn = provider.calls[1]?.messages.at(-1);
+    expect(repairTurn?.content).toMatch(/not valid JSON/);
+    expect(repairTurn?.content).toContain('Sure! Here is your twist:');
+  });
+
+  it('reports OUTPUT_NOT_JSON when every attempt is non-JSON', async () => {
+    const notJson = new ModelProviderError('OUTPUT_NOT_JSON', 'not json', { raw: 'nope' });
+    const provider = scriptedProvider([notJson]);
+    const result = await generateStructured({
+      provider,
+      schema: gameEventProposalSchema,
+      messages: MESSAGES,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('OUTPUT_NOT_JSON');
+    expect(result.error.attempts).toBe(2);
+    expect(result.error.raw).toBe('nope');
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it('rethrows transport faults instead of spending repair attempts on them', async () => {
+    const down = new ModelProviderError('PROVIDER_UNREACHABLE', 'runtime is down');
+    const provider = scriptedProvider([down]);
+    await expect(
+      generateStructured({ provider, schema: gameEventProposalSchema, messages: MESSAGES }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_UNREACHABLE' });
+    expect(provider.calls).toHaveLength(1);
   });
 
   it('makes exactly one attempt when repair is disabled', async () => {

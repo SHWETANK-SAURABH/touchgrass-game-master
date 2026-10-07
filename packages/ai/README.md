@@ -36,8 +36,9 @@ second is what proved the port was provider-shaped rather than accidentally Olla
    4B model is viable: malformed structure becomes largely unreachable rather than merely unlikely.
 2. **Validation** — the result is re-parsed with the same Zod schema. Grammar guarantees shape, not
    meaning; a well-formed `durationSeconds: 300` can still break a rule.
-3. **Repair** — on failure the model is told which fields were wrong, shown its own rejected output,
-   and asked once more. Bounded, default one extra attempt.
+3. **Repair** — on a schema failure, or a reply that is not JSON at all, the model is told what was
+   wrong, shown its own rejected output, and asked once more. Bounded, default one extra attempt.
+   Transport faults (unreachable host, timeout) are not repaired; they are thrown to the caller.
 
 Nothing here decides whether output is _safe_. That is a separate deterministic pass over validated
 data — see `@touchgrass/safety`.
@@ -50,4 +51,4 @@ double is not a shipped integration.
 
 ## Not implemented yet
 
-The Game Master agent (`src/agent/`) and its Mastra integration. Phase 2.
+The Game Master agent (`src/agent/`) and its Mastra integration. Phase 3.

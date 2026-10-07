@@ -2,7 +2,7 @@
 
 > **Phase 1 status.** The hazard taxonomy, the verdict contract, and policy derivation are implemented
 > and tested (`packages/safety`). The matching engine — the code that turns a proposal into a verdict
-> — is **not implemented**; it is Phase 2. This document is the specification it will be built
+> — is **not implemented** and is not scheduled before Phase 3 (the Game Master). This document is the specification it will be built
 > against.
 
 ---
@@ -70,7 +70,7 @@ are different questions and need separate passes.
 
 Fifteen categories, implemented in `packages/safety/src/hazards.ts`. Each carries an id, a
 description, a severity, a **rationale** explaining the real-world failure it prevents, and example
-signals used as documentation and as Phase 2 test fixtures.
+signals used as documentation and as test fixtures for the validator.
 
 | Category                          | Severity | What it covers                                                                         |
 | --------------------------------- | -------- | -------------------------------------------------------------------------------------- |
@@ -152,12 +152,12 @@ whole architecture assumes this layer will sometimes fail.
 coordinate field anywhere, so a proposal cannot claim spatial authority. Durations max at 300s, score
 deltas at ±10, proposals at three per turn. `.strict()` means an unexpected key is a rejection.
 
-**Layer 3 — lexical hazard matching** _(Phase 2)_. `proposalTextFragments()` already extracts every
+**Layer 3 — lexical hazard matching** _(planned)_. `proposalTextFragments()` already extracts every
 human-readable string from any proposal kind — rationale, rule, instruction, landmark, announcement —
 so the matcher has a single, exhaustive surface to scan. Word matching alone is both evadable and
 over-triggering, which is why it is one layer of five rather than the mechanism.
 
-**Layer 4 — structural checks** _(Phase 2)_. These do not read text at all; they compare the proposal
+**Layer 4 — structural checks** _(planned)_. These do not read text at all; they compare the proposal
 against the derived policy. Does a `MODIFIER` introduce contact in a game whose `contactPolicy` is
 `none`? Does `durationSeconds` exceed `policy.maxRuleDurationSeconds`? Does a `ROLE_ASSIGN` name a role
 the definition does not have, or push a role past its maximum? These are exact, unevadable, and cannot
@@ -238,7 +238,7 @@ prompt.
 must always produce the same verdict.
 
 **It is versioned.** `policyVersion` is stamped into every verdict so a historical log stays
-interpretable after the rule set changes — which matters because Phase 2's regression suite will
+interpretable after the rule set changes — which matters because the validator's regression suite will
 replay real recorded turns against new rules.
 
 ---
@@ -248,7 +248,7 @@ replay real recorded turns against new rules.
 Every state change records where it came from. `EventSource` is `'engine' | 'human' |
 'game-master'`, and a Phase 1 test asserts that no lifecycle entry is ever attributed to the model.
 
-Phase 3 persists, per session:
+Once persistence exists, it stores per session:
 
 - every proposal the model made, including its own stated `rationale`
 - the verdict each one received, with its violations and `policyVersion`
@@ -278,7 +278,7 @@ a deterministic check that a human can read, reason about, and have reviewed.**
 
 ---
 
-## Phase 2 scope
+## Validator scope (planned)
 
 | Deliverable                                                | Location                               |
 | ---------------------------------------------------------- | -------------------------------------- |

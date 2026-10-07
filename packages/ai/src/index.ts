@@ -35,5 +35,4 @@ export {
   generateStructured,
   toJsonSchema,
   describeIssues,
-  asStructuredFailure,
 } from './structured';

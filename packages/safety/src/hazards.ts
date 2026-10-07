@@ -55,7 +55,7 @@ export interface HazardCategory {
   readonly rationale: string;
   /**
    * Illustrative phrasings a generated proposal might contain. These are
-   * documentation and test fixtures for the Phase 2 rule set, not the rule set:
+   * documentation and test fixtures for the planned rule set, not the rule set:
    * the validator will combine lexical signals with structural checks, because a
    * word list alone is trivially evaded and also over-triggers.
    */

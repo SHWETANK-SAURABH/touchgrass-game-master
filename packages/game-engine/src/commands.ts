@@ -5,10 +5,10 @@ import { z } from 'zod';
  *
  * Commands come from humans and from the engine itself. A model proposal is not a
  * command — it becomes one only after schema and safety validation, which is the
- * whole point of keeping the two vocabularies separate. Phase 2 adds the
- * `APPLY_GAME_MASTER_EVENT` command that carries a validated proposal across that
- * line; until then the engine handles only session lifecycle, which is enough to
- * prove determinism and replay.
+ * whole point of keeping the two vocabularies separate. Phase 2 adds player
+ * actions, rounds, scoring and win conditions, plus the path that carries a
+ * validated game event into state; until then the engine handles only session
+ * lifecycle, which is enough to prove determinism and replay.
  */
 
 export const createSessionCommandSchema = z

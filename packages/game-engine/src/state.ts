@@ -16,8 +16,18 @@ import { gameEventKindSchema } from '@touchgrass/game-definitions';
 export const sessionStatusSchema = z.enum([
   /** Created, players joining, roles not yet assigned. */
   'lobby',
+  /**
+   * Roles assigned, first round not yet begun. Declared as part of the Phase 2
+   * lifecycle contract; no command produces it until rounds are implemented.
+   */
+  'starting',
   /** Running. The Game Master may propose events. */
   'active',
+  /**
+   * Between rounds. Declared as part of the Phase 2 lifecycle contract; no
+   * command produces it until rounds are implemented.
+   */
+  'round_end',
   /** Temporarily halted by a human. No events are applied. */
   'paused',
   /** Finished normally. */
@@ -92,7 +102,7 @@ export const sessionStateSchema = z.object({
   /** Index into the definition's `phases` array. */
   phaseIndex: z.int().min(0),
   players: z.array(playerSchema),
-  /** Rules currently in force. Phase 2 populates this from validated proposals. */
+  /** Rules currently in force. Nothing writes this yet; the Phase 2 engine will. */
   modifiers: z.array(activeModifierSchema),
   log: z.array(logEntrySchema),
   createdAt: z.int(),
@@ -125,11 +135,4 @@ export function findPlayer(state: SessionState, playerId: string): Player | unde
 /** Players holding a given role, used by the engine when scoping a modifier. */
 export function playersInRole(state: SessionState, roleId: string): readonly Player[] {
   return state.players.filter((player) => player.active && player.roleId === roleId);
-}
-
-/** Modifiers still in force at `now`. Expiry is evaluated, never mutated in place. */
-export function liveModifiers(state: SessionState, now: number): readonly ActiveModifier[] {
-  return state.modifiers.filter(
-    (modifier) => modifier.expiresAt === null || modifier.expiresAt > now,
-  );
 }

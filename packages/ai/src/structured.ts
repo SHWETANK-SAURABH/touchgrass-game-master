@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { err, ok, type Logger, type Result } from '@touchgrass/shared';
 import { ModelProviderError } from './provider/errors';
-import type { ChatMessage, GenerateOptions, ModelProvider } from './provider/types';
+import type {
+  ChatMessage,
+  GenerateJsonResult,
+  GenerateOptions,
+  ModelProvider,
+} from './provider/types';
 
 /**
  * Schema-constrained generation with a bounded repair loop.
@@ -29,7 +34,7 @@ import type { ChatMessage, GenerateOptions, ModelProvider } from './provider/typ
 export interface StructuredFailure {
   readonly code: 'OUTPUT_SCHEMA_INVALID' | 'OUTPUT_NOT_JSON';
   readonly message: string;
-  /** Flattened Zod issues from the final attempt, for logs and tests. */
+  /** What was wrong with the final attempt, one line per problem. */
   readonly issues: readonly string[];
   /** The raw completion that failed, truncated. Kept for prompt debugging. */
   readonly raw: string;
@@ -117,20 +122,42 @@ export async function generateStructured<T>(
   let totalLatencyMs = 0;
   let lastIssues: string[] = [];
   let lastRaw = '';
+  let lastCode: StructuredFailure['code'] = 'OUTPUT_SCHEMA_INVALID';
 
   for (let attempt = 1; attempt <= maxRepairAttempts + 1; attempt += 1) {
-    const generation = await provider.generateJson({
-      messages,
-      jsonSchema,
-      schemaName,
-      ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
-      ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
-      ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
-      ...(request.signal ? { signal: request.signal } : {}),
-    });
+    let generation: GenerateJsonResult;
+    try {
+      generation = await provider.generateJson({
+        messages,
+        jsonSchema,
+        schemaName,
+        ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+        ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
+        ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+        ...(request.signal ? { signal: request.signal } : {}),
+      });
+    } catch (cause) {
+      // A completion that is not JSON is a model mistake, so it spends an attempt
+      // and gets the same repair treatment as a schema violation. Anything else
+      // (unreachable host, timeout, cancellation) is rethrown for the caller's
+      // fallback strategy.
+      if (!(cause instanceof ModelProviderError) || cause.code !== 'OUTPUT_NOT_JSON') throw cause;
+
+      lastCode = 'OUTPUT_NOT_JSON';
+      lastRaw = typeof cause.context.raw === 'string' ? cause.context.raw : '';
+      lastIssues = ['(root): the reply was not valid JSON'];
+      logger?.warn('structured generation returned non-JSON output', { attempt });
+
+      if (attempt <= maxRepairAttempts) {
+        messages.push({ role: 'assistant', content: lastRaw });
+        messages.push(repairPrompt(lastIssues, lastRaw));
+      }
+      continue;
+    }
 
     totalLatencyMs += generation.latencyMs;
     lastRaw = generation.raw;
+    lastCode = 'OUTPUT_SCHEMA_INVALID';
 
     const parsed = schema.safeParse(generation.data);
     if (parsed.success) {
@@ -161,28 +188,10 @@ export async function generateStructured<T>(
   }
 
   return err({
-    code: 'OUTPUT_SCHEMA_INVALID',
-    message: `Model output failed schema validation after ${String(maxRepairAttempts + 1)} attempt(s).`,
+    code: lastCode,
+    message: `Model output was still invalid after ${String(maxRepairAttempts + 1)} attempt(s).`,
     issues: lastIssues,
     raw: lastRaw.slice(0, 1_000),
     attempts: maxRepairAttempts + 1,
   });
-}
-
-/**
- * Narrows a thrown value into a `StructuredFailure` when it is an unparseable
- * completion. Transport faults are rethrown: a dead model host is an operational
- * problem for the caller's fallback strategy, not a validation outcome.
- */
-export function asStructuredFailure(cause: unknown): StructuredFailure | undefined {
-  if (cause instanceof ModelProviderError && cause.code === 'OUTPUT_NOT_JSON') {
-    return {
-      code: 'OUTPUT_NOT_JSON',
-      message: cause.message,
-      issues: [],
-      raw: typeof cause.context.raw === 'string' ? cause.context.raw : '',
-      attempts: 1,
-    };
-  }
-  return undefined;
 }

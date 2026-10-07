@@ -15,7 +15,6 @@ export {
   activePlayers,
   findPlayer,
   playersInRole,
-  liveModifiers,
 } from './state';
 
 export {
@@ -66,6 +65,6 @@ export {
 
 export { ENGINE_ERROR_CODES, type EngineError, type EngineErrorCode, engineError } from './errors';
 
-export { assignRoles, canHoldRole } from './roles';
+export { assignRoles } from './roles';
 
 export { type EngineContext, createSession, reduce, replay } from './reduce';

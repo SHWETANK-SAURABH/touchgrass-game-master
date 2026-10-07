@@ -146,7 +146,7 @@ describe('REMOVE_PLAYER', () => {
 
 describe('START_SESSION', () => {
   it('assigns every active player a role from the definition', () => {
-    const result = reduce(addPlayers(session(), 6), { type: 'START_SESSION' }, ctx(100));
+    const result = reduce(addPlayers(session(), 4), { type: 'START_SESSION' }, ctx(100));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -171,16 +171,16 @@ describe('START_SESSION', () => {
   });
 
   it('refuses to start below the player minimum', () => {
-    const result = reduce(addPlayers(session(), 2), { type: 'START_SESSION' }, ctx());
+    const result = reduce(addPlayers(session(), 1), { type: 'START_SESSION' }, ctx());
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe('NOT_ENOUGH_PLAYERS');
-    expect(result.error.message).toMatch(/at least 3 players/);
+    expect(result.error.message).toMatch(/at least 2 players/);
   });
 
   it('assigns identical roles for the same seed and different roles for another', () => {
     const rolesFor = (seed: number): (string | null)[] => {
-      const base = createSession(create({ randomSeed: seed }), ctx());
+      const base = createSession(create({ gameId: 'ice-and-fire', randomSeed: seed }), ctx());
       if (!base.ok) throw new Error('fixture failed');
       const started = reduce(addPlayers(base.value, 8), { type: 'START_SESSION' }, ctx());
       if (!started.ok) throw new Error('fixture failed');
@@ -189,12 +189,12 @@ describe('START_SESSION', () => {
 
     expect(rolesFor(999)).toEqual(rolesFor(999));
     // Two seeds producing the same layout would be a coincidence, not a bug, but
-    // with 8 players across two roles it is overwhelmingly unlikely.
+    // with 8 players across three roles it is overwhelmingly unlikely.
     expect(rolesFor(1)).not.toEqual(rolesFor(2));
   });
 
   it('cannot start twice', () => {
-    const started = reduce(addPlayers(session(), 5), { type: 'START_SESSION' }, ctx());
+    const started = reduce(addPlayers(session(), 4), { type: 'START_SESSION' }, ctx());
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const again = reduce(started.value, { type: 'START_SESSION' }, ctx());
@@ -206,7 +206,7 @@ describe('START_SESSION', () => {
 
 describe('phases', () => {
   it('advances through the declared phases in order', () => {
-    const started = reduce(addPlayers(session(), 5), { type: 'START_SESSION' }, ctx());
+    const started = reduce(addPlayers(session(), 4), { type: 'START_SESSION' }, ctx());
     if (!started.ok) throw new Error('fixture failed');
 
     const phases = getGameDefinition('tag').phases;
@@ -237,7 +237,7 @@ describe('phases', () => {
 
 describe('pause, resume, complete, abort', () => {
   function running(): SessionState {
-    const started = reduce(addPlayers(session(), 5), { type: 'START_SESSION' }, ctx());
+    const started = reduce(addPlayers(session(), 4), { type: 'START_SESSION' }, ctx());
     if (!started.ok) throw new Error('fixture failed');
     return started.value;
   }

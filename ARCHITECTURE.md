@@ -78,7 +78,7 @@ whether that proposal becomes an event.
 ```mermaid
 flowchart TD
     State["Game state<br/>(session + definition + log)"] --> Agent
-    Agent["Game Master agent<br/><i>planned — Phase 2</i>"] --> Model
+    Agent["Game Master agent<br/><i>planned — Phase 3</i>"] --> Model
     Model["Gemma via ModelProvider<br/>grammar-constrained decoding"] --> Raw
 
     Raw["Raw JSON completion"] --> Zod
@@ -87,12 +87,12 @@ flowchart TD
     Repair --> Model
     Zod -- valid --> Safety
 
-    Safety{"Safety validation<br/><i>planned — Phase 2</i>"}
+    Safety{"Safety validation<br/><i>planned — later phase</i>"}
     Safety -- reject --> Audit["Logged, never shown"]
     Safety -- allow --> Engine
 
     Engine["Game engine<br/>pure reducer"] --> NewState["New session state<br/>+ append-only log"]
-    NewState --> Broadcast["Realtime broadcast<br/><i>planned — Phase 3</i>"]
+    NewState --> Broadcast["Realtime broadcast<br/><i>planned — later phase</i>"]
     Broadcast --> Players["Players act outdoors"]
 ```
 
@@ -109,7 +109,7 @@ Three properties hold at every arrow:
 
 ## 4. Agent architecture
 
-> **Phase 1 status:** the contract and the generation machinery exist. The agent itself is Phase 2.
+> **Phase 1 status:** the contract and the generation machinery exist. The agent itself is Phase 3.
 
 An "agent" in this project is narrow and deliberately unglamorous: a component that observes game
 state, decides whether to act, and emits a structured proposal into a validation pipeline. It has no
@@ -140,7 +140,7 @@ What is already in place:
 - **Per-game guidance as data** — each definition carries a `gameMaster` block with a persona, an
   `encourage` list, an `avoid` list, and hand-written example twists for few-shot prompting.
 
-Phase 2 adds the agent that assembles those inputs into a prompt and decides _when_ to fire.
+Phase 3 adds the agent that assembles those inputs into a prompt and decides _when_ to fire.
 [AI.md](./AI.md) covers the reasoning in depth.
 
 ### Why one agent, not several
@@ -202,12 +202,43 @@ not a creative one. `assignRoles` fills each role to its declared minimum from a
 list, pushes any overflow past a role's maximum into the default role, and refuses outright if the
 headcount cannot satisfy the definition. Same seed, same joining order, same teams — on any host.
 
-### What Phase 2 adds
+### What exists today, and the Phase 2 contract
 
-One command: `APPLY_GAME_MASTER_EVENT`, carrying a proposal that has already passed Zod _and_ safety.
-Its handler is where `OBJECTIVE`, `MODIFIER`, `ZONE_RULE`, `TIMER`, `SCORE_ADJUST` and `ROLE_ASSIGN`
-become state. The `modifiers` array and the `'game-master'` log provenance already exist on
-`SessionState` waiting for it.
+Phase 1 implemented session lifecycle only: the diagram above is the complete set of transitions the
+code performs. **Phase 2 builds the rest of the engine**, and the contract it must meet is fixed here
+so the implementation has one source of truth.
+
+**Two input paths, one engine.** Nothing reaches state except through validation:
+
+```
+PlayerAction  →  action validation  →  GameEvent  →  state transition
+AI proposal   →  event validation   →  GameEvent  →  state transition
+```
+
+A `PlayerAction` is something a player reports (tagged someone, found someone). The engine validates
+it and turns it into a `GameEvent`. An AI proposal is never applied directly: it is validated and
+either becomes a `GameEvent` or is refused. Clients and models cannot submit state.
+
+**Lifecycle.** The engine must support seven statuses:
+
+```
+LOBBY → STARTING → ACTIVE ⇄ ROUND_END → COMPLETED
+                   ACTIVE ⇄ PAUSED
+        any non-terminal status → ABORTED
+```
+
+All seven are declared in `sessionStatusSchema` (as lower-case values). `starting` and `round_end`
+are declared but unreachable until Phase 2 implements rounds.
+
+**Player counts.** Tag supports 2–4 players. A solo game may declare a minimum of 1; the definition
+schema allows it.
+
+**Still to build in Phase 2:** player actions, the game-event vocabulary and its handlers, rounds,
+timers, scoring, win conditions, and modifiers with deterministic behaviour. None of these exist yet.
+`SessionState.modifiers` and the `'game-master'` log provenance are present but nothing writes them.
+
+**Not part of Phase 2:** the Game Master, Mastra, Gemma, the safety validator, realtime, and
+persistence. The engine must run and be tested with no model at all.
 
 ---
 
@@ -243,16 +274,17 @@ flowchart LR
     Verdict -- reject --> Log["Audit log only"]
 ```
 
-**Phase 1 ships the taxonomy and the contracts; Phase 2 ships the rules.** Fifteen hazard categories
-with severity, rationale, and example signals; the three-way verdict type; policy derivation. The
-matching engine is Phase 2 — deciding _what_ counts as a hazard was the hard part, and writing rules
-against a fixed taxonomy is the mechanical part.
+**Phase 1 ships the taxonomy and the contracts; a later phase ships the rules.** Fifteen hazard
+categories with severity, rationale, and example signals; the three-way verdict type; policy
+derivation. The matching engine is not scheduled before the Game Master (Phase 3) — deciding _what_
+counts as a hazard was the hard part, and writing rules against a fixed taxonomy is the mechanical
+part.
 
 ---
 
 ## 7. Realtime architecture
 
-> **Planned — Phase 3.** Nothing realtime exists today, and there is no placeholder package.
+> **Planned — later phase.** Nothing realtime exists today, and there is no placeholder package.
 
 The intended shape, and the constraint it has to respect:
 
@@ -285,7 +317,7 @@ Decisions already fixed by the Phase 1 design:
 
 ## 8. Data architecture
 
-> **Planned — Phase 3** for MongoDB and Redis. Today every piece of state is in-process.
+> **Planned — later phase** for MongoDB and Redis. Today every piece of state is in-process.
 
 ```mermaid
 flowchart LR
@@ -294,11 +326,11 @@ flowchart LR
         Hazards["Hazard taxonomy<br/>+ policy derivation"]
     end
 
-    subgraph Hot["Hot — Phase 3"]
+    subgraph Hot["Hot — later phase"]
         R[("Redis<br/>live SessionState<br/>join-code → session")]
     end
 
-    subgraph Durable["Durable — Phase 3"]
+    subgraph Durable["Durable — later phase"]
         M[("MongoDB Atlas<br/>command log, completed sessions,<br/>safety verdict audit trail")]
     end
 
@@ -360,7 +392,7 @@ is unavailable.
 
 ## 10. Production architecture
 
-> **Planned — Phase 4** for deployment. The build output and container already target it.
+> **Planned — later phase** for deployment. The build output and container already target it.
 
 ```mermaid
 flowchart TD
@@ -442,7 +474,7 @@ scripted fallback; malformed JSON needs a retry.
 | Model not on the runtime           | `MODEL_NOT_AVAILABLE`       | Not retried. Health surfaces the exact pull command.                                        |
 | 4xx from the runtime               | `PROVIDER_HTTP_ERROR`       | **Not retried** — the request was wrong, and repeating it only burns the deadline.          |
 | 5xx from the runtime               | `PROVIDER_HTTP_ERROR`       | Retried within budget.                                                                      |
-| Completion is not JSON             | `OUTPUT_NOT_JSON`           | Counts as an attempt; the raw text is logged verbatim for prompt debugging.                 |
+| Completion is not JSON             | `OUTPUT_NOT_JSON`           | Counts as an attempt and enters the same repair loop; the raw text is kept on the failure.  |
 | Valid JSON, fails Zod              | `OUTPUT_SCHEMA_INVALID`     | **Repair loop**: the model is told which fields were wrong, once. Then the turn is dropped. |
 | Passes Zod, fails safety           | `revise` / `reject` verdict | `revise` → one repair attempt. `reject` → logged, never shown to players.                   |
 | Illegal command reaches the engine | nine `EngineError` codes    | Refused as a `Result` value. State is untouched.                                            |
@@ -466,14 +498,14 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase       | Scope                                                                                                     | Status       |
-| ----------- | --------------------------------------------------------------------------------------------------------- | ------------ |
-| **Phase 1** | Monorepo, contracts, model abstraction, engine core, game catalogue, hazard taxonomy, docs                | **Complete** |
-| Phase 2     | Game Master agent (Mastra), deterministic safety validator, `APPLY_GAME_MASTER_EVENT`                     | Next         |
-| Phase 3     | Realtime multiplayer (WebSockets + Redis), MongoDB persistence, `packages/realtime` + `packages/database` | Planned      |
-| Phase 4     | Sentry observability, Render + DigitalOcean GPU deployment, production hardening                          | Planned      |
+| Phase       | Scope                                                                                                    | Status       |
+| ----------- | -------------------------------------------------------------------------------------------------------- | ------------ |
+| **Phase 1** | Monorepo, contracts, model abstraction, session-lifecycle engine core, game catalogue, hazard taxonomy   | **Complete** |
+| Phase 2     | Deterministic game engine: player actions, game events, rounds, timers, scoring, win conditions          | Next         |
+| Phase 3     | Game Master: Mastra agent on Gemma, proposing validated game events to the engine                        | Planned      |
+| Later       | Safety validator, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment — not scheduled | Planned      |
 
-**Mastra is not installed yet.** It is the intended agent framework, and it arrives in Phase 2 with
+**Mastra is not installed yet.** It is the intended agent framework, and it arrives in Phase 3 with
 the agent that uses it. Installing a framework ahead of the code that needs it produces a dead
 dependency; the seam it plugs into — `gameMasterTurnSchema` and `generateStructured()` — already
 exists and is tested.

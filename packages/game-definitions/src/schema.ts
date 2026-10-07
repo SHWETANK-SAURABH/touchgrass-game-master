@@ -144,8 +144,9 @@ export const gameDefinitionSchema = z
     name: z.string().min(1),
     tagline: z.string().min(1).max(120),
     description: z.string().min(1),
-    minPlayers: z.int().min(2),
-    maxPlayers: z.int().min(2),
+    /** 1 is allowed so a solo game can be defined. */
+    minPlayers: z.int().min(1),
+    maxPlayers: z.int().min(1),
     recommendedDurationMinutes: z.int().positive(),
     spaceRequirement: spaceRequirementSchema,
     intensity: intensitySchema,

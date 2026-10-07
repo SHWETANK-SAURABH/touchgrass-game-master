@@ -2,7 +2,7 @@
 
 > **Phase 1 status.** The contract, the provider abstraction, and the structured-generation pipeline
 > with its repair loop are implemented and tested. The Game Master agent is **not** implemented — it
-> is Phase 2. This document describes the intended design and marks precisely which parts exist.
+> is Phase 3; Phase 2 is the deterministic game engine, which involves no AI. This document describes the intended design and marks precisely which parts exist.
 
 ---
 
@@ -11,7 +11,7 @@
 ```
 Game State
     ↓
-Game Master Agent          ← planned, Phase 2
+Game Master Agent          ← planned, Phase 3
     ↓
 Gemma (open weights)       ← implemented: ModelProvider port + two adapters
     ↓
@@ -19,9 +19,9 @@ Structured GameEvent       ← implemented: gameEventProposalSchema
     ↓
 Zod validation             ← implemented: generateStructured() + repair loop
     ↓
-Safety validation          ← planned, Phase 2 (taxonomy + contracts implemented)
+Safety validation          ← planned, later phase (taxonomy + contracts implemented)
     ↓
-Game Engine                ← implemented: pure reducer
+Game Engine                ← lifecycle implemented; full engine is Phase 2
 ```
 
 Every arrow narrows what is possible. By the time anything reaches the engine it has been constrained
@@ -57,7 +57,7 @@ flowchart LR
         B["Game definition<br/>allowedEventKinds,<br/>modifierThemes"]
         C["Game Master guidance<br/>persona, encourage,<br/>avoid, exampleTwists"]
     end
-    Observation --> P["Prompt assembly<br/><i>Phase 2</i>"]
+    Observation --> P["Prompt assembly<br/><i>Phase 3</i>"]
     P --> G["generateStructured()<br/><b>implemented</b>"]
     G --> T["GameMasterTurn<br/>1–3 proposals"]
     T --> V["→ safety → engine"]
@@ -184,7 +184,7 @@ Three validation passes, with a strict ordering and no shortcuts.
 ```mermaid
 flowchart TD
     Raw["Raw completion"] --> J{"Parses as JSON?"}
-    J -- no --> F1["OUTPUT_NOT_JSON<br/>raw text logged"]
+    J -- no --> R
     J -- yes --> Z{"Satisfies Zod?"}
     Z -- no --> R["Repair loop<br/>field-level feedback,<br/>bounded attempts"]
     R --> Raw
@@ -194,8 +194,10 @@ flowchart TD
     S -- "allow" --> E["Engine applies it"]
 ```
 
-**The repair loop is bounded and informative.** On a validation failure the model is told exactly
-which fields were wrong, shown its own rejected output, and asked once more. Small models repair well
+**The repair loop is bounded and informative.** On a validation failure, or a reply that is not JSON
+at all, the model is told what was wrong, shown its own rejected output, and asked once more. If the
+budget runs out the failure is reported as `OUTPUT_NOT_JSON` or `OUTPUT_SCHEMA_INVALID`, whichever the
+last attempt was. Transport faults are not repaired; they are thrown to the caller. Small models repair well
 when feedback names the field and the constraint. The budget defaults to one extra attempt — past
 that, the turn is dropped, because a Game Master that goes quiet for a round is fine and one that
 takes twenty seconds is not.
@@ -312,22 +314,23 @@ factory.
 
 Every generation reports `latencyMs`, `attempts`, `model`, and token usage where the runtime provides
 it. Validation failures log the field-level issues and the raw completion. This is the telemetry that
-makes prompt work empirical rather than anecdotal, and it is why Sentry (Phase 4) has something worth
+makes prompt work empirical rather than anecdotal, and it is why Sentry (a later phase) has something worth
 collecting.
 
 ---
 
-## 8. Phase 2: what gets built
+## 8. Phase 3: what gets built
 
 | Piece                            | Where                                               |
 | -------------------------------- | --------------------------------------------------- |
 | Game Master agent (Mastra)       | `packages/ai/src/agent/`                            |
 | Prompt assembly from definitions | `packages/ai/src/agent/prompt.ts`                   |
 | Turn trigger policy              | when to fire, and when to stay quiet                |
-| Deterministic safety validator   | `packages/safety/src/validate.ts`                   |
-| `APPLY_GAME_MASTER_EVENT`        | `packages/game-engine/src/reduce.ts`                |
+| Hand-off of proposals to engine  | through the engine's event validation (Phase 2)     |
 | Golden-prompt regression tests   | real Gemma output, pinned, asserted against schemas |
 
 Mastra is **not installed yet**, deliberately. It arrives with the agent that uses it; the seam it
-plugs into — `gameMasterTurnSchema` and `generateStructured()` — already exists and has 219 tests
-behind it.
+plugs into — `gameMasterTurnSchema` and `generateStructured()` — already exists and is covered by tests.
+
+The deterministic safety validator is specified in [SAFETY.md](./SAFETY.md) and is not part of
+Phase 3.

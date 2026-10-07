@@ -21,9 +21,9 @@ rather than throwing or silently no-op'ing.
 
 ## `proposal.ts` — the AI → engine contract
 
-The narrow waist of the whole product, and the reason the dependency direction runs this way: **the
-engine owns the schema the AI package must satisfy**, so the engine can be read and trusted without
-opening a line of AI code.
+**The engine owns the schema a model's output must satisfy.** The engine imports nothing from
+`@touchgrass/ai`, so it can be read and trusted without opening a line of AI code; the AI package's
+tests validate generated output against this schema.
 
 Seven event kinds in a strict discriminated union. No free-form data bag, no coordinate fields,
 length-bounded strings, bounded durations and score deltas, a required `rationale`, and at most three
@@ -38,8 +38,18 @@ proposals per turn.
 - Role assignment lives here, not in the model: who chases whom is a fairness decision with hard
   constraints, not a creative one.
 
-## Not implemented yet
+## Not implemented yet — this is Phase 2
 
-`APPLY_GAME_MASTER_EVENT` — the command that carries a Zod-validated, safety-approved proposal into
-state. Phase 2. The `modifiers` array and the `'game-master'` log provenance already exist waiting for
-it.
+Only session lifecycle exists. Phase 2 builds the full engine against this contract:
+
+- `PlayerAction → validation → GameEvent → state transition`; AI proposals take the same validated
+  path and never touch state directly.
+- Lifecycle: `lobby → starting → active ⇄ round_end → completed`, plus `paused` and `aborted`. All
+  seven statuses are declared in `sessionStatusSchema`; `starting` and `round_end` are unreachable
+  until rounds exist.
+- Rounds, timers, scoring, win conditions, player actions, and modifiers with deterministic
+  behaviour.
+- Tag for 2–4 players; solo games may declare a minimum of 1.
+
+`SessionState.modifiers` and the `'game-master'` log provenance exist but nothing writes them yet.
+The event kinds in `proposal.ts` are the Phase 1 set and will be revised in Phase 2.

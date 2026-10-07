@@ -8,7 +8,7 @@ The hazard taxonomy, policy derivation, and the verdict contract. See
 | `hazards.ts`    | **implemented** | 15 hazard categories with severity, rationale, and example signals  |
 | `policy.ts`     | **implemented** | `policyFor(definition)` — derives a session's rules from its game   |
 | `verdict.ts`    | **implemented** | `SafetyVerdict`, `SafetyViolation`, the `SafetyValidator` signature |
-| matching engine | **Phase 2**     | The code that turns a proposal into a verdict                       |
+| matching engine | **planned**     | The code that turns a proposal into a verdict                       |
 
 ## Why the taxonomy ships before the validator
 
