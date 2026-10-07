@@ -267,6 +267,9 @@ object that owns one game's state, calls `submitPlayerAction`, `advanceTime` and
 replaces its state only when the engine accepts. Nothing mutable was added to the engine. See
 [its README](../game-session/README.md).
 
+A WebSocket transport around one such session exists as `@touchgrass/realtime` (Phase 5C). It is
+where a connection is tied to a player id; the engine and `GameState` know nothing about it.
+
 - Two messages that arrive together are processed one after the other. The second is judged against
   the state the first produced, and is refused by the ordinary rules if it is no longer legal: a
   tagger's second tag is refused because they are now a runner, and a second report of the same find

@@ -1,0 +1,22 @@
+{
+  "name": "@touchgrass/realtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@touchgrass/game-engine": "*",
+    "@touchgrass/game-session": "*",
+    "@touchgrass/shared": "*",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

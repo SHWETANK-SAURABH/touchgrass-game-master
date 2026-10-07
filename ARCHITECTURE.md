@@ -256,7 +256,8 @@ order give the same roles on any host.
 | Safety validator                                  | Phase 4, in `packages/safety`; the engine does not depend on it  |
 | Multiplayer command boundary                      | Phase 5A: `submitPlayerAction`, actor supplied by the caller     |
 | In-memory authoritative session holder            | Phase 5B: `@touchgrass/game-session`, one object per game        |
-| Realtime transport, persistence                   | Later                                                            |
+| WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
+| Session registry, authentication, persistence     | Later                                                            |
 
 ---
 
@@ -314,10 +315,12 @@ not a guarantee. [SAFETY.md](./SAFETY.md) lists what it cannot do.
 
 ## 7. Realtime architecture
 
-> **Phase 5A establishes the deterministic multiplayer command boundary. Transport is implemented
-> later.** No WebSocket server, connection handling, broadcast, Redis or realtime package exists.
+> **Status (Phase 5C).** Three layers exist: the engine's command boundary (5A), an in-memory
+> holder of one game's state (5B), and a WebSocket transport around one such holder (5C). The
+> transport is for development: one game per server, no authentication, no reconnection, no
+> automatic time, and no production deployment. Redis, persistence and a browser client do not exist.
 
-What exists is the function a transport will call:
+The function at the bottom, which everything above it calls:
 
 ```
 Client
@@ -380,7 +383,81 @@ host command (trusted caller)   →     applyCommand    →   reduce
 It is in memory only. A process restart loses every game; there is no persistence, no restore from a
 saved state, no duplicate-message detection, and no connection to the Game Master.
 
-The intended shape of the transport, not yet built, and the constraint it has to respect:
+### The WebSocket transport (Phase 5C)
+
+`@touchgrass/realtime` puts sockets around one `GameSession`.
+
+```
+WebSocket frame                         untrusted text
+  ↓  envelope validation                protocol.ts   join | action, strict, size-limited
+connection → player id                  room.ts       the room's own table; never in GameState
+  ↓
+GameSession.submitAction(playerId, intent, ctx)
+  ↓
+authoritative state + history entries
+  ↓
+`update` to every joined connection     or `rejected` / `error` to the sender only
+```
+
+| Module         | Does                                                                           |
+| -------------- | ------------------------------------------------------------------------------ |
+| `protocol.ts`  | The envelopes. Knows messages, not games. Does not look inside `intent`        |
+| `room.ts`      | Ties connections to one session; joins, actions, broadcast, `tick`. No sockets |
+| `ws-server.ts` | Thin `ws` adapter: sockets to connections, frames to room calls, the clock     |
+
+A client may send exactly two messages, and neither has a field for a player id, a session id, a
+state or a message id:
+
+```ts
+{
+  type: ('join', joinCode, displayName);
+}
+{
+  type: ('action', intent);
+}
+```
+
+The server sends `joined`, `update`, `rejected` (the game refused) and `error` (the transport
+refused: `BAD_MESSAGE`, `NOT_JOINED`, `ALREADY_JOINED`, `WRONG_JOIN_CODE`).
+
+- **One session per server.** `createRealtimeServer({ session, port, clock })` is built around the
+  one `GameSession` it is given. There is no session registry and no lookup: nothing in a URL or a
+  message selects a game, and the join code is checked against that one game.
+- **Identity is minted by the server and is not authentication.** On a join the room creates a new
+  player id, asks the session to add that player, and only then records that the connection is that
+  player. Later actions use that id. A client never sends one. This means "the same connection that
+  joined" and nothing more: a connection is not a user, anyone with the join code can join, and
+  nothing proves who they are.
+- **Joining is the one host command a client can cause,** for itself only. Pause, resume, abort,
+  removal and phase changes are not reachable from any message.
+- **Envelope and intent are validated separately.** The transport checks the envelope and passes
+  `intent` on untouched; the engine validates it as a player intent.
+- **Broadcast is the session's result.** After an accepted change every joined connection is sent
+  the added history entries and the full authoritative state. Nothing a client sent is echoed. A
+  refusal goes to the sender only, and a connection that has not joined is sent nothing.
+- **The full state is broadcast.** Every joined client receives the whole `GameState`, including
+  the join code and the random seed. There are no per-player views and no patches.
+- **Order.** The room is synchronous: a frame is handled and its messages are written before the
+  next frame is read, so updates go out in history order.
+- **A disconnect removes the connection, not the player.** No `REMOVE_PLAYER` is issued. The player
+  stays in the game, nobody can act as them, and a new connection cannot become them. Leaving and
+  reconnecting are not designed.
+- **No automatic tick.** `room.tick(ctx)` is a trusted server-side call that advances time and
+  broadcasts if the game changed. Nothing calls it on a timer, so a game moves forward in time only
+  when a message is accepted or something calls `tick`.
+- **The clock is injected at the edge.** The adapter stamps each frame from a `Clock`. The room, the
+  session and the engine read none.
+
+Not handled: authentication, reconnection, leave, duplicate messages, rate limiting, slow clients,
+and display names (free text shown to other players, not safety-checked).
+
+**Deployment is deferred.** Next.js route handlers cannot accept a WebSocket upgrade and the
+standalone server offers no hook for one, so the realtime server needs its own process or a custom
+server in front of Next. Neither exists. `npm run realtime:dev` runs it through `tsx` for local
+development; the Docker image does not start it. State is in one process's memory, so it cannot be
+scaled out, and a restart ends the game.
+
+The intended production shape, not yet built:
 
 ```mermaid
 flowchart TD
@@ -405,7 +482,7 @@ Decisions already fixed by the engine design:
   reachable through the player-action boundary, and exposing them to clients needs its own
   authorisation first.
 - **Duplicate delivery and rate limiting belong to the transport.** The engine has no message id
-  and does not recognise a repeated message.
+  and does not recognise a repeated message. The Phase 5C transport does not handle either yet.
 - **Redis holds hot state; it is not the system of record.** The input log is. A lost Redis key
   costs a replay, not a session.
 - **Broadcast is the last step, not a side effect.** The engine returns new state; the transport
@@ -601,19 +678,21 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                                   | Status       |
-| ------- | ----------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                            | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable             | **Complete** |
-| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)             | **Complete** |
-| Phase 4 | Deterministic safety validator between domain validation and the engine                                                 | **Complete** |
-| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                             | **Complete** |
-| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                              | **Complete** |
-| Later   | Realtime transport (WebSockets + Redis), calling the Game Master during a game, MongoDB persistence, Sentry, deployment | Planned      |
+| Phase   | Scope                                                                                                       | Status       |
+| ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
+| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B) | **Complete** |
+| Phase 4 | Deterministic safety validator between domain validation and the engine                                     | **Complete** |
+| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                 | **Complete** |
+| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                  | **Complete** |
+| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
+| Later   | Session registry, authentication, reconnection, Redis, Game Master during a game, persistence, deployment   | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.
 
-The same reasoning explains the missing `realtime/` and `database/` packages. The suggested structure
-listed them; creating empty directories to match a diagram would have made the architecture look
-complete while being less honest than a documented gap.
+The same reasoning explains why `realtime/` did not exist until Phase 5C and why there is still no
+`database/` package. The suggested structure listed them; creating empty directories to match a
+diagram would have made the architecture look complete while being less honest than a documented
+gap.

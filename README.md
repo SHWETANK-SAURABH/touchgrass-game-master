@@ -32,12 +32,17 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 > safety policy, and the engine applies it only if both pass. The safety validator is a fixed set of
 > rules, not a guarantee that play is safe — see [SAFETY.md](./SAFETY.md).
 >
-> Phase 5A establishes the deterministic multiplayer command boundary. Transport is implemented
-> later. Phase 5B adds an in-memory session object that holds one game's authoritative state and
-> applies inputs to it one at a time; it is not a server and nothing connects to it yet. A client message says what a player did and never who; the engine is given the actor
-> separately and decides what the action means. **Not built yet:** realtime multiplayer (no
-> WebSockets, no connections, no broadcast), anything in the app that calls the Game Master,
-> persistence, and a game UI. See [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
+> Phase 5A establishes the deterministic multiplayer command boundary: a client message says what a
+> player did and never who, and the engine is given the actor separately. Phase 5B adds an in-memory
+> session object that holds one game's authoritative state. Phase 5C adds a WebSocket transport
+> around one such session: connections join with a join code, are given a player id by the server,
+> send intents, and receive the authoritative state after each accepted change.
+>
+> The transport is a development-stage boundary, not a multiplayer product. One server holds one
+> game; there is no session registry, no authentication, no reconnection, and nothing advances time
+> automatically. **Not built yet:** a browser client or game UI, production deployment of the
+> realtime server, anything that calls the Game Master during a game, and persistence. See
+> [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---
 
@@ -100,6 +105,7 @@ Already running Ollama on the host? Skip `ai:up` / `ai:pull` and just
 | `npm run ai:pull`       | Pull `MODEL_NAME` into the runtime                        |
 | `npm run ai:logs`       | Tail the model runtime logs                               |
 | `npm run ai:live`       | Manual test: one real Game Master call to the local model |
+| `npm run realtime:dev`  | Development only: a WebSocket server around one new game  |
 
 GPU on the host? `docker compose --profile gpu up -d ollama-gpu`.
 
@@ -115,6 +121,7 @@ packages/
   game-definitions/       GameDefinition schema + the five games, as data
   game-engine/            Deterministic engine: actions, events, time, scoring, winners
   game-session/           In-memory holder of one game's authoritative state
+  realtime/               WebSocket transport around one game session
   safety/                 Hazard taxonomy, policy, and the deterministic safety validator
   ai/                     ModelProvider + adapters, and the Game Master (Mastra agent)
 ```
@@ -127,6 +134,7 @@ Imports between workspaces, as they are in the code today (no cycles):
 | `game-definitions` | nothing                                               |
 | `game-engine`      | `game-definitions`, `shared`                          |
 | `game-session`     | `game-engine`, `shared`                               |
+| `realtime`         | `game-engine`, `game-session`, `shared`               |
 | `safety`           | `game-definitions`, `game-engine`, `shared`           |
 | `ai`               | `game-definitions`, `game-engine`, `safety`, `shared` |
 | `apps/web`         | `ai`, `game-definitions`, `safety`, `shared`          |
@@ -136,9 +144,10 @@ opening a line of AI code. `safety` uses the engine's event types and one functi
 an engine-validated event; it calls nothing that changes a game. The game event schema a model's output must satisfy lives in the engine;
 the AI package's tests validate generated output against it.
 
-There is deliberately **no `realtime/` or `database/` package yet.** An empty package that exists to
-make a diagram look complete is worse than an honest gap — those arrive in a later phase, with the
-code that needs them.
+`realtime` arrived in Phase 5C, with the transport that needs it; the web app does not import it.
+There is deliberately **no `database/` package yet.** An empty package that exists to make a diagram
+look complete is worse than an honest gap — it arrives in a later phase, with the code that needs
+it.
 
 ---
 
