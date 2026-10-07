@@ -297,11 +297,11 @@ flowchart TD
     WS -- state patches --> P2
 ```
 
-Decisions already fixed by the Phase 1 design:
+Decisions already fixed by the engine design:
 
-- **Clients send commands, never state.** The engine command union is the only vocabulary a client
-  may use, and the server re-validates every command with Zod regardless of origin.
-- **Redis holds hot state; it is not the system of record.** The command log is. A lost Redis key
+- **Clients send player actions and host commands, never state.** Those two unions are the only
+  vocabulary a client may use, and the server re-validates every one with Zod regardless of origin.
+- **Redis holds hot state; it is not the system of record.** The input log is. A lost Redis key
   costs a replay, not a session.
 - **Broadcast is the last step, not a side effect.** The engine returns new state; the transport
   publishes it. The engine has no idea a socket exists.
@@ -327,7 +327,7 @@ flowchart LR
     end
 
     subgraph Durable["Durable — later phase"]
-        M[("MongoDB Atlas<br/>command log, completed sessions,<br/>safety verdict audit trail")]
+        M[("MongoDB Atlas<br/>input log, completed sessions,<br/>safety verdict audit trail")]
     end
 
     Defs --> Engine["Engine"]
@@ -339,13 +339,15 @@ flowchart LR
 
 The division of labour:
 
-| Store             | Holds                                                            | Why there                                                                  |
-| ----------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| **Code**          | Game definitions, hazard taxonomy                                | They are reviewed, tested, and versioned with the logic that reads them.   |
-| **Redis**         | Live `GameState`, join-code lookup, pub/sub                      | Sub-millisecond reads on the referee path; naturally ephemeral.            |
-| **MongoDB Atlas** | Append-only command log, finished sessions, every safety verdict | Durable, queryable, and the basis of the audit trail SAFETY.md commits to. |
+| Store             | Holds                                                          | Why there                                                                  |
+| ----------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **Code**          | Game definitions, hazard taxonomy                              | They are reviewed, tested, and versioned with the logic that reads them.   |
+| **Redis**         | Live `GameState`, join-code lookup, pub/sub                    | Sub-millisecond reads on the referee path; naturally ephemeral.            |
+| **MongoDB Atlas** | Append-only input log, finished sessions, every safety verdict | Durable, queryable, and the basis of the audit trail SAFETY.md commits to. |
 
-**Why the command log is the system of record.** Storing commands rather than snapshots means the
+**Why the input log is the system of record.** The input log is everything given to a game, with
+the time it arrived: host commands, player actions, external events, and time advances. Storing
+those rather than snapshots means the
 engine's replay property does real work: a session can be reconstructed, a disputed call re-run, and
 a safety regression tested against real historical turns. Snapshots would throw that away.
 
@@ -399,7 +401,7 @@ flowchart TD
     end
 
     Render --> Redis[("Redis<br/>hot session state")]
-    Render --> Mongo[("MongoDB Atlas<br/>command log + audit")]
+    Render --> Mongo[("MongoDB Atlas<br/>input log + audit")]
     Render --> Sentry["Sentry<br/>errors + model telemetry"]
 
     Render -- "MODEL_BASE_URL<br/>OpenAI-compatible HTTP" --> GPU
@@ -463,18 +465,18 @@ MODEL_API_KEY=...
 Failures are classified by cause, because the right response differs per cause. A dead daemon needs a
 scripted fallback; malformed JSON needs a retry.
 
-| Failure                            | Code                        | Response                                                                                    |
-| ---------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------- |
-| Runtime unreachable                | `PROVIDER_UNREACHABLE`      | Retried within budget, then **degraded mode**: the game continues without twists.           |
-| Deadline exceeded                  | `PROVIDER_TIMEOUT`          | Retried within budget. The turn is skipped rather than delivered late.                      |
-| Model not on the runtime           | `MODEL_NOT_AVAILABLE`       | Not retried. Health surfaces the exact pull command.                                        |
-| 4xx from the runtime               | `PROVIDER_HTTP_ERROR`       | **Not retried** — the request was wrong, and repeating it only burns the deadline.          |
-| 5xx from the runtime               | `PROVIDER_HTTP_ERROR`       | Retried within budget.                                                                      |
-| Completion is not JSON             | `OUTPUT_NOT_JSON`           | Counts as an attempt and enters the same repair loop; the raw text is kept on the failure.  |
-| Valid JSON, fails Zod              | `OUTPUT_SCHEMA_INVALID`     | **Repair loop**: the model is told which fields were wrong, once. Then the turn is dropped. |
-| Passes Zod, fails safety           | `revise` / `reject` verdict | `revise` → one repair attempt. `reject` → logged, never shown to players.                   |
-| Illegal command reaches the engine | nine `EngineError` codes    | Refused as a `Result` value. State is untouched.                                            |
-| Environment is invalid             | `CONFIGURATION_INVALID`     | **Fatal at startup**, naming the offending variable. Never a mid-game surprise.             |
+| Failure                          | Code                        | Response                                                                                    |
+| -------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------- |
+| Runtime unreachable              | `PROVIDER_UNREACHABLE`      | Retried within budget, then **degraded mode**: the game continues without twists.           |
+| Deadline exceeded                | `PROVIDER_TIMEOUT`          | Retried within budget. The turn is skipped rather than delivered late.                      |
+| Model not on the runtime         | `MODEL_NOT_AVAILABLE`       | Not retried. Health surfaces the exact pull command.                                        |
+| 4xx from the runtime             | `PROVIDER_HTTP_ERROR`       | **Not retried** — the request was wrong, and repeating it only burns the deadline.          |
+| 5xx from the runtime             | `PROVIDER_HTTP_ERROR`       | Retried within budget.                                                                      |
+| Completion is not JSON           | `OUTPUT_NOT_JSON`           | Counts as an attempt and enters the same repair loop; the raw text is kept on the failure.  |
+| Valid JSON, fails Zod            | `OUTPUT_SCHEMA_INVALID`     | **Repair loop**: the model is told which fields were wrong, once. Then the turn is dropped. |
+| Passes Zod, fails safety         | `revise` / `reject` verdict | `revise` → one repair attempt. `reject` → logged, never shown to players.                   |
+| Illegal input reaches the engine | a typed `EngineError` code  | Refused as a `Result` value. State is untouched.                                            |
+| Environment is invalid           | `CONFIGURATION_INVALID`     | **Fatal at startup**, naming the offending variable. Never a mid-game surprise.             |
 
 Three rules behind that table:
 

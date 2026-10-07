@@ -92,12 +92,12 @@ exists.
 
 **It is not deterministic.** Ask twice, get two answers. A referee that gives different rulings on
 identical situations is not a referee. The engine is a pure function, and the test suite pins that:
-two replays of the same command log produce byte-identical state.
+two replays of the same recorded inputs produce byte-identical state.
 
 **It cannot be audited.** When a parent asks why their child was told to do something, "the model
 decided" is not an answer. Every state change in TouchGrass carries a provenance tag — `engine`,
-`human`, or `game-master` — and the model's own stated rationale is kept alongside the rule that
-accepted or rejected it.
+`human`, or `game-master` — so the history shows which changes came from a model. (The event
+schema has no field for a model's reasoning; whether to record one is a Phase 3 decision.)
 
 **It cannot be trusted with arithmetic or invariants.** Scores drift. Role maximums get violated. A
 game with eleven taggers and one runner is not a game. `assignRoles` enforces the definition's

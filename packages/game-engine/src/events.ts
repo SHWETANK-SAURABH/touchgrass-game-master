@@ -63,7 +63,7 @@ export const roundEndEventSchema = z
 export const zoneChangeEventSchema = z
   .object({
     type: z.literal('ZONE_CHANGE'),
-    /** SAFE_ZONE adds a safe place; MOVING_ZONE replaces the playable area. */
+    /** Which kind of zone is announced. The engine records it and enforces nothing. */
     modifier: z.enum(['SAFE_ZONE', 'MOVING_ZONE']),
     /** A place described in words, e.g. "the bench by the gate". */
     zone: spokenText,
@@ -97,7 +97,7 @@ export const ruleModifierEventSchema = z
   .object({
     type: z.literal('RULE_MODIFIER'),
     modifier: z.literal('FREEZE_PERIOD'),
-    /** Roles that may not act while the freeze lasts. */
+    /** Roles the freeze is announced for. The engine records it and blocks no action. */
     roleIds: z.array(id).min(1).max(8),
     durationSeconds,
   })

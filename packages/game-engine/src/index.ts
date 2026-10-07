@@ -83,18 +83,15 @@ export {
 
 export { validateGameEvent, validatePlayerAction, findRule, isImmune } from './validate';
 
-export {
-  SCORE_REASONS,
-  scoreAwardSchema,
-  type ScoreAward,
-  pointsFor,
-  awardsForEvent,
-  applyAwards,
-} from './scoring';
+export { SCORE_REASONS, scoreAwardSchema, type ScoreAward, pointsFor } from './scoring';
 
 export { evaluateWinners } from './win-conditions';
 
-export { type EngineContext, applyEvent } from './apply-event';
+// `applyEvent`, `awardsForEvent` and `applyAwards` are deliberately not exported.
+// They apply an event or add points without the checks on where it came from, so
+// the only way for a caller outside this package to change gameplay state is
+// through `processPlayerAction`, `submitGameEvent`, `reduce` and `advanceTime`.
+export type { EngineContext } from './apply-event';
 
 export { eventsForAction, processPlayerAction } from './process-action';
 

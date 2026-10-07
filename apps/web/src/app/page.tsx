@@ -13,7 +13,7 @@ const PIPELINE = [
   {
     step: 'Zod validates',
     detail:
-      'The proposal is parsed against a strict discriminated union. Unknown keys, long rules, and oversized score changes are rejected outright.',
+      'The proposed event is parsed against a strict discriminated union. Unknown keys, over-long text, and out-of-range durations or points are rejected outright. No event can set a score.',
   },
   {
     step: 'Safety validates',
@@ -23,7 +23,7 @@ const PIPELINE = [
   {
     step: 'Engine executes',
     detail:
-      'A pure reducer applies the approved event. Same state plus same command always gives the same result, on any host.',
+      'A deterministic engine applies the approved event and computes scores and winners itself. The same state, input and time always give the same result, on any host.',
   },
   {
     step: 'Players act',

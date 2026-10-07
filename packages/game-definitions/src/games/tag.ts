@@ -46,7 +46,7 @@ export const tag = defineGame({
     {
       id: 'final-round',
       label: 'Final Round',
-      description: 'Last ninety seconds. Points are doubled and no new modifiers are introduced.',
+      description: 'Last ninety seconds. No new modifiers are introduced.',
       typicalDurationSeconds: 90,
     },
   ],

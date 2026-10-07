@@ -72,11 +72,17 @@ export function isLifecycleEventKind(kind: GameEventKind): kind is LifecycleEven
   return (LIFECYCLE_EVENT_KINDS as readonly string[]).includes(kind);
 }
 
-/** The modifiers a game can allow. Each has engine-defined behaviour; none is free text. */
+/**
+ * The modifiers a game can allow. None is free text.
+ *
+ * The engine records zones and freeze periods and removes them when they expire,
+ * and enforces nothing for them: it cannot see where players are, and no
+ * behaviour has been defined for a freeze.
+ */
 export const GAME_MODIFIER_KINDS = [
-  /** A named place where the game's contact rule does not apply. */
+  /** A named place announced as safe. Recorded only. */
   'SAFE_ZONE',
-  /** A named playable area that replaces the previous one. */
+  /** A named place announced as the play area. Recorded only. */
   'MOVING_ZONE',
   /** An extra objective open to every player. */
   'BONUS_OBJECTIVE',
@@ -86,7 +92,7 @@ export const GAME_MODIFIER_KINDS = [
   'TIME_EXTENSION',
   /** Players moved between the roles the definition declares. */
   'ROLE_SWAP',
-  /** A period in which the named roles may not act. */
+  /** A period announced for the named roles. Recorded only; it blocks no action. */
   'FREEZE_PERIOD',
 ] as const;
 export const gameModifierKindSchema = z.enum(GAME_MODIFIER_KINDS);

@@ -148,8 +148,9 @@ thrown objects explicitly. This _reduces the frequency_ of bad proposals. It is 
 whole architecture assumes this layer will sometimes fail.
 
 **Layer 2 — schema constraints.** Some hazards are designed out of the contract entirely. There is no
-coordinate field anywhere, so a proposal cannot claim spatial authority. Durations max at 300s, score
-deltas at ±10, proposals at three per turn. `.strict()` means an unexpected key is a rejection.
+coordinate field anywhere, so an event cannot claim spatial authority. Durations are capped at 600
+seconds, a challenge or objective is worth 1 to 10 points, and no event can set or reduce a score.
+`.strict()` means an unexpected key is a rejection.
 
 **Layer 3 — lexical hazard matching** _(planned)_. The matcher scans every
 human-readable string an event can carry — today that is `zone` on `ZONE_CHANGE` and `description` on
@@ -244,12 +245,13 @@ replay real recorded turns against new rules.
 
 ## The audit trail
 
-Every state change records where it came from. `HistorySource` is `'engine' | 'human' |
-'game-master'`, and a Phase 1 test asserts that no lifecycle entry is ever attributed to the model.
+Every history entry records where it came from. `HistorySource` is `'engine' | 'human' |
+'game-master'`: events the engine produces are recorded as `engine`, and an event submitted on
+behalf of the Game Master is recorded as `game-master`. The engine's tests assert both.
 
 Once persistence exists, it stores per session:
 
-- every proposal the model made, including its own stated `rationale`
+- every event the model proposed
 - the verdict each one received, with its violations and `policyVersion`
 - every proposal that was **rejected**, which is the more interesting half
 
