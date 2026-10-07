@@ -19,7 +19,7 @@ import {
  * contains every non-negotiable category, and the schema checks it.
  */
 
-export const POLICY_VERSION = '2026.10-phase1';
+export const POLICY_VERSION = '2026.10-phase4';
 
 export const safetyPolicySchema = z
   .object({

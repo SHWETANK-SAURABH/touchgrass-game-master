@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@touchgrass/game-definitions": "*",
+    "@touchgrass/game-engine": "*",
+    "@touchgrass/shared": "*",
     "zod": "^4.6.5"
   }
 }

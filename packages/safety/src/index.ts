@@ -32,3 +32,14 @@ export {
   policyFor,
   enforces,
 } from './policy';
+
+export { type LexicalRule, LEXICAL_RULES } from './rules';
+
+export { assessEventSafety } from './assess';
+
+export {
+  type SafetyClearedEvent,
+  type SafetyRejection,
+  validateSafety,
+  releaseClearedEvent,
+} from './clearance';

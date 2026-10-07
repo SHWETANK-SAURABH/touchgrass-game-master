@@ -80,13 +80,19 @@ import { runGameMasterTurn } from '@touchgrass/ai/handoff';
 
 const result = await runGameMasterTurn({ gameMaster, state, ctx });
 // ok:  { outcome: 'APPLIED' | 'NO_EVENT', state, proposal }
-// err: { stage: 'PROPOSAL' | 'SCHEMA' | 'STATE' | 'APPLICATION', ... }
+// err: { stage: 'PROPOSAL' | 'SCHEMA' | 'STATE' | 'SAFETY' | 'APPLICATION', ... }
 ```
 
-It owns no game rules. A proposal is checked by the engine's `validateExternalEvent` and applied by
+It owns no game rules and no safety rules. A proposal is checked by the engine's
+`validateExternalEvent`, then by `validateSafety` from `@touchgrass/safety`, and only then applied by
 the engine's `applyValidatedEvent`. Schema-valid does not mean game-valid: a proposal that names a
-player, role or power that does not exist is refused, and the state is returned unchanged.
+player, role or power that does not exist is refused. Domain-valid does not mean safe: a legal event
+that matches a safety rule is refused at the `SAFETY` stage with its verdict. In every refusal the
+state is returned unchanged, the event is not rewritten, and the model is not asked again.
+
+An optional `safety` argument (`{ supervisedByAdult, maxRuleDurationSeconds }`) is passed to the
+policy. It can make a session stricter; it cannot switch a check off or cause an event to be applied.
 
 ## Not implemented yet
 
-Safety validation of a proposal, and anything that decides when to ask the Game Master.
+Anything that decides when to ask the Game Master: nothing calls `runGameMasterTurn` on its own.

@@ -222,7 +222,14 @@ applyValidatedEvent(state, validated, ctx): Result<GameState, EngineError>
   another game, one validated on a different branch of the same game, and one validated before the
   game moved on (including into the next round). A state reloaded from storage counts as a different
   state: validate again after loading.
-- "Validated" means legal in the game. It does not mean safe; the engine has no safety check.
+- "Validated" means legal in the game. It does not mean safe; the engine has no safety check and
+  does not depend on the safety package. The safety validator (`@touchgrass/safety`) takes a
+  `ValidatedGameEvent` as its input and is run by the Game Master hand-off before
+  `applyValidatedEvent`. Calling `submitGameEvent` or `applyValidatedEvent` directly applies a legal
+  event with no safety check.
+- The event inside a `ValidatedGameEvent` is frozen all the way down, so it cannot be edited between
+  being checked and being applied. `isValidatedGameEvent(value)` says whether a value is one the
+  engine issued; it lets a later stage refuse a look-alike.
 - `applyValidatedEvent` then applies it, validating once more as every application does.
 - Nothing is repaired: an unknown player, role or power is a refusal, and the state is untouched.
 

@@ -1,31 +1,36 @@
 # AI Architecture
 
-> **Status: Phase 3B — validated hand-off.** A Game Master exists: one Mastra agent, running Gemma
-> through a local Ollama, that reads a game and returns a structured proposal. A proposal can now be
-> handed to the game engine, which checks it against the current game and applies it only if it is
-> legal. **There is still no safety validator**, and nothing in the app calls the Game Master during
-> a game. The normal tests use a scripted stand-in for the model. The separate manual live test
-> (`npm run ai:live`) has passed against the real local `gemma3:4b` model.
+> **Status: Phase 4 — safety validator.** A Game Master exists: one Mastra agent, running Gemma
+> through a local Ollama, that reads a game and returns a structured proposal. A proposal can be
+> handed off: the game engine checks that it is legal in the current game, a deterministic safety
+> validator then checks it against the game's safety policy, and only then does the engine apply it.
+> Nothing in the app calls the Game Master during a game. The normal tests use a scripted stand-in
+> for the model. The separate manual live test (`npm run ai:live`) runs against the real local
+> `gemma3:4b` model.
 
-**AI proposes; deterministic validation decides; the game engine executes.**
+**AI proposes; schema checks shape; domain validation checks legality; safety validation checks
+real-world risk; the deterministic engine executes.**
 
 **Schema-valid does not mean game-valid.** In the Phase 3A live run, real Gemma output that passed
 the schema named players (`"123"`), roles (`"merchant"`) and powers (`"speedBoost"`) that did not
 exist, and offered a shield to a player who already held one. The schema cannot know any of that;
 only the engine, looking at the game, can.
 
+**Domain-valid does not mean safe.** A bonus objective that says "climb the abandoned building" is
+well formed and legal in Tag. The engine has no reason to refuse it. The safety validator does.
+
 ---
 
 ## Who does what
 
-| Role                 | What it is                                                                       | State           |
-| -------------------- | -------------------------------------------------------------------------------- | --------------- |
-| Claude / Codex       | Development assistants used to write this code. Not part of the running product. | —               |
-| **Gemma**            | The runtime model, served locally by Ollama                                      | Integrated      |
-| **Game Master**      | **Proposes** at most one game event, with a reason                               | Implemented     |
-| **Hand-off**         | Passes a proposal to the engine's validator, then to the engine                  | Implemented     |
-| **Game engine**      | **Decides** whether the event is legal now, and **executes** it                  | Implemented     |
-| **Safety validator** | **Validates** a proposal against the hazard taxonomy                             | Not implemented |
+| Role                 | What it is                                                                       | State       |
+| -------------------- | -------------------------------------------------------------------------------- | ----------- |
+| Claude / Codex       | Development assistants used to write this code. Not part of the running product. | —           |
+| **Gemma**            | The runtime model, served locally by Ollama                                      | Integrated  |
+| **Game Master**      | **Proposes** at most one game event, with a reason                               | Implemented |
+| **Hand-off**         | Passes a proposal to the engine's validator, the safety validator, the engine    | Implemented |
+| **Game engine**      | **Decides** whether the event is legal now, and **executes** it                  | Implemented |
+| **Safety validator** | **Decides** whether a legal event passes the game's safety policy                | Implemented |
 
 ---
 
@@ -46,15 +51,26 @@ state-aware validation           validateExternalEvent (engine): is it legal in 
     ↓
 ValidatedGameEvent               can only be issued by the engine
     ↓
+safety validation                validateSafety (safety package): does any safety rule match?
+    ↓
+SafetyClearedEvent               can only be issued by the safety package
+    ↓
 deterministic application        applyValidatedEvent (engine)
     ↓
 new GameState
-
-not built:  Safety validation, which belongs between schema validation and the engine.
 ```
 
-Every arrow narrows what is possible. Nothing in this pipeline has judged a proposal **safe**: that
-step does not exist yet, so an applied event has been checked for legality, not for hazards.
+Every arrow narrows what is possible. A rejection at any stage leaves the game exactly as it was:
+nothing is applied, scored or recorded, the event is not rewritten, and the model is not asked again.
+
+What the safety step is and is not: it is a fixed set of rules over the text and values of the event,
+described in [SAFETY.md](./SAFETY.md). It never reads the proposal's `rationale`, which is the model
+describing its own proposal and is not evidence of anything. It knows nothing about the place the game
+is being played, so passing it means "no rule matched", not "safe".
+
+The safety step belongs to this hand-off, not to the engine. The engine does not depend on the safety
+package, so code that calls the engine's `submitGameEvent` or `applyValidatedEvent` directly applies a
+legal event with no safety check. What is gated is a Game Master proposal on its way to the engine.
 
 ---
 
@@ -332,8 +348,10 @@ flowchart TD
     S -- "allow" --> E["Engine applies it"]
 ```
 
-Of this diagram, the JSON, schema and repair steps are implemented in the Game Master. The safety
-step and "engine applies it" are not.
+The JSON, schema and repair steps are in the Game Master. The safety step and the engine are reached
+through the hand-off, which also runs the engine's legality check between the schema and safety. The
+diagram's `revise → repair` arrow is **not** implemented: a `revise` verdict is refused like a
+`reject`, and nothing asks the model for a safer version.
 
 **The repair loop is bounded and informative.** On a validation failure, or a reply that is not JSON
 at all, the model is told what was wrong, shown its own rejected output, and asked once more. If the
@@ -355,9 +373,22 @@ export type SafetyValidator<TProposal, TContext> = (
 A check that can await is a check that can hang, time out, and get skipped under load. Forbidding I/O
 in the type also forbids the thing we must never do: ask a model whether its own output was safe.
 
-**There is no "unknown" verdict.** `SafetyDisposition` is `allow | revise | reject`. Anything the
-validator cannot classify is a reject. A game that fails closed is boring for one round; a game that
-fails open is dangerous.
+**There is no "unknown" verdict.** `SafetyDisposition` is `allow | revise | reject`. Text the
+validator cannot read, and instructions that leave the risky choice open, are violations. A game that
+fails closed is boring for one round; a game that fails open is dangerous.
+
+**The hand-off reports where a proposal stopped.** `handOffProposal` and `runGameMasterTurn` return a
+failure with a `stage`:
+
+| Stage         | Meaning                                                                 |
+| ------------- | ----------------------------------------------------------------------- |
+| `PROPOSAL`    | The Game Master produced no proposal (model unavailable, invalid reply) |
+| `SCHEMA`      | Not a well-formed proposal for this game, or an engine-only event       |
+| `STATE`       | Well formed, but not legal in this game right now                       |
+| `SAFETY`      | Legal, but refused by the safety policy; carries the verdict            |
+| `APPLICATION` | The engine refused the event as it was applied                          |
+
+Legality is checked before safety, so an event that is both illegal and unsafe is a `STATE` failure.
 
 ---
 
@@ -465,12 +496,12 @@ collecting.
 
 Not built:
 
-| Piece                                   | Notes                                                                                                                                                      |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Safety validation of a proposal         | Specified in [SAFETY.md](./SAFETY.md); taxonomy and contracts exist. Until it exists, the hand-off applies events that have been checked for legality only |
-| When to ask the Game Master             | Nothing calls `runGameMasterTurn` yet; there is no trigger or schedule                                                                                     |
-| Limits on how often events are proposed | The engine accepts any number of valid external events                                                                                                     |
-| Prompt evaluation                       | Recorded real outputs, asserted against the schemas                                                                                                        |
+| Piece                                   | Notes                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Showing or storing safety verdicts      | A verdict is returned to the hand-off's caller. There is no UI to show it and no persistence to keep it |
+| When to ask the Game Master             | Nothing calls `runGameMasterTurn` yet; there is no trigger or schedule                                  |
+| Limits on how often events are proposed | The engine accepts any number of valid external events                                                  |
+| Prompt evaluation                       | Recorded real outputs, asserted against the schemas                                                     |
 
 `generateStructured()` in `structured.ts` predates the Game Master. It is still tested and exported,
 but the Game Master does not use it; it has its own repair loop around the Mastra agent.

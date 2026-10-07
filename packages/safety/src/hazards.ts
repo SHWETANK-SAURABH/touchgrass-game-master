@@ -40,6 +40,9 @@ export const HAZARD_CATEGORY_IDS = [
   'wildlife-and-plants',
   'isolation-and-separation',
   'darkness-and-visibility',
+  'aggression-and-harassment',
+  'privacy',
+  'unassessable-instruction',
 ] as const;
 
 export const hazardCategoryIdSchema = z.enum(HAZARD_CATEGORY_IDS);
@@ -274,6 +277,54 @@ export const HAZARD_CATEGORIES: readonly HazardCategory[] = [
     rationale:
       'Every bundled game declares `requiresDaylight`. This category is moderate rather than critical because the mitigation is usually to stop and reschedule, not to reject a single rule.',
     exampleSignals: ['after dark', 'with the lights off', 'in the dark', 'once the sun is down'],
+  },
+  {
+    id: 'aggression-and-harassment',
+    label: 'Aggression and harassment',
+    description:
+      'Fighting, hitting, hurting, threatening, bullying, humiliating or coercing another person, whether or not they are playing.',
+    severity: 'critical',
+    rationale:
+      'A twist that makes a chase more "intense" can slide into telling one child to hurt or humiliate another. Contact limits cover how players touch; this covers intent to harm, which no contact policy permits.',
+    exampleSignals: [
+      'fight for it',
+      'punch',
+      'make them cry',
+      'bully the slowest',
+      'force them to',
+    ],
+  },
+  {
+    id: 'privacy',
+    label: 'Privacy and personal information',
+    description:
+      'Photographing, filming or recording people; collecting names, addresses, phone numbers or other personal details; sharing anything about anyone online.',
+    severity: 'critical',
+    rationale:
+      'A scavenger objective such as "get a photo of someone in a red coat" turns a game into surveillance of people who never agreed to play, and players are often children whose own details must not be collected either.',
+    exampleSignals: [
+      'take a photo of',
+      'film someone',
+      'get their phone number',
+      'find out their address',
+      'post it online',
+    ],
+  },
+  {
+    id: 'unassessable-instruction',
+    label: 'Instruction that cannot be assessed',
+    description:
+      'Text the rules cannot read, or an instruction that leaves the risky choice open: go anywhere, do whatever it takes, somewhere unspecified, outside the agreed area.',
+    severity: 'high',
+    rationale:
+      'The system has no map and cannot see the space. An instruction that sends players to an unspecified place, or tells them to choose how, hands the dangerous decision to whoever is most excited. If the policy cannot tell what is being asked, the answer is no.',
+    exampleSignals: [
+      'go anywhere you like',
+      'whatever it takes',
+      'somewhere far away',
+      'leave the area',
+      'as far as you can',
+    ],
   },
 ];
 

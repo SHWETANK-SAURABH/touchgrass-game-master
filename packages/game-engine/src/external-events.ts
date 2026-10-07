@@ -54,6 +54,8 @@ export interface ValidatedGameEvent {
   readonly source: ExternalEventSource;
   /** The game it was validated for. */
   readonly gameId: string;
+  /** The id of the game definition whose rules it was validated under. */
+  readonly definitionId: string;
   /** The length of that game's history at validation. */
   readonly historyLength: number;
   readonly [validatedBrand]: true;
@@ -67,6 +69,23 @@ export interface ValidatedGameEvent {
  * diverged do not share it, and neither does a state rebuilt from JSON.
  */
 const issued = new WeakMap<ValidatedGameEvent, { readonly anchor: HistoryEntry | undefined }>();
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}
+
+/**
+ * True for a value this module issued. It reveals nothing and changes nothing;
+ * it lets a later stage (the safety boundary) refuse a look-alike before doing
+ * any work on it.
+ */
+export function isValidatedGameEvent(value: unknown): value is ValidatedGameEvent {
+  return typeof value === 'object' && value !== null && issued.has(value as ValidatedGameEvent);
+}
 
 function unknownGame(state: GameState): EngineError {
   return engineError('INVALID_GAME_CONFIGURATION', `No game definition for "${state.gameId}".`, {
@@ -124,9 +143,12 @@ export function validateExternalEvent(
   if (!valid.ok) return valid;
 
   const validated = Object.freeze({
-    event: external.data,
+    // Frozen all the way down: the event cannot be edited between being checked
+    // and being applied.
+    event: deepFreeze(external.data),
     source,
     gameId: state.id,
+    definitionId: definition.id,
     historyLength: current.value.history.length,
   }) as ValidatedGameEvent;
   issued.set(validated, { anchor: current.value.history.at(-1) });

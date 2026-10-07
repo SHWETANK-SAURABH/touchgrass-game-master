@@ -44,7 +44,7 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json(
     {
       status: model.ok ? 'ok' : 'degraded',
-      phase: 'phase-3a-game-master',
+      phase: 'phase-4-safety-validator',
       checkedAt: new Date().toISOString(),
       durationMs: Math.round(performance.now() - startedAt),
       model,
@@ -53,13 +53,7 @@ export async function GET(): Promise<NextResponse> {
         gameIds: GAME_IDS,
         hazardCategories: HAZARD_CATEGORY_IDS.length,
       },
-      notImplemented: [
-        'game-ui',
-        'game-master-integration',
-        'safety-validator',
-        'realtime',
-        'persistence',
-      ],
+      notImplemented: ['game-ui', 'game-master-integration', 'realtime', 'persistence'],
     },
     {
       status: 200,

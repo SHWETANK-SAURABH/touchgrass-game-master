@@ -1,9 +1,14 @@
 # Safety Architecture
 
-> **Phase 1 status.** The hazard taxonomy, the verdict contract, and policy derivation are implemented
-> and tested (`packages/safety`). The matching engine — the code that turns a proposal into a verdict
-> — is **not implemented**. Game Master proposals can now be handed to the game engine (Phase 3B), which checks that they are legal in the game, not that they are safe: no safety check sees them. This document is the specification it will be built
-> against.
+> **Status: Phase 4 — safety validator.** A deterministic safety validator exists in
+> `packages/safety`. A Game Master proposal that the engine has found legal is assessed against the
+> safety policy of its game, and is handed to the engine only if no rule matched. It is a fixed set
+> of rules over the text and values of an event. It has no knowledge of the place a game is being
+> played, and **it does not make the application safe**: see
+> [What the validator cannot do](#what-the-validator-cannot-do).
+
+**AI proposes; schema checks shape; domain validation checks legality; safety validation checks
+real-world risk; the deterministic engine executes.**
 
 ---
 
@@ -60,14 +65,16 @@ A concrete example of why schema validation is not enough. This event is **perfe
 
 Correct shape. Correct types. Within every bound. And it could kill a child.
 
-Zod answers _"is this the right shape"_. Safety answers _"should a child in a field hear this"_. They
-are different questions and need separate passes.
+Zod answers _"is this the right shape"_. The engine answers _"is this legal in this game right
+now"_. Safety answers _"should a child in a field hear this"_. They are different questions and need
+separate passes. **Domain-valid does not mean safe**: the engine accepts the event above, and the
+safety validator refuses it.
 
 ---
 
 ## The hazard taxonomy
 
-Fifteen categories, implemented in `packages/safety/src/hazards.ts`. Each carries an id, a
+Eighteen categories, implemented in `packages/safety/src/hazards.ts`. Each carries an id, a
 description, a severity, a **rationale** explaining the real-world failure it prevents, and example
 signals used as documentation and as test fixtures for the validator.
 
@@ -83,19 +90,26 @@ signals used as documentation and as test fixtures for the validator.
 | `strangers`                       | critical | Approaching, following, photographing, or taking anything from people outside the game |
 | `sensory-deprivation`             | critical | Blindfolds, closed eyes, covered ears while anyone is moving                           |
 | `ingestion`                       | critical | Eating, tasting, licking, chewing, drinking anything found outdoors                    |
+| `aggression-and-harassment`       | critical | Hurting, fighting, threatening, humiliating, bullying or coercing anyone               |
+| `privacy`                         | critical | Photographing or recording people; collecting or sharing personal details              |
 | `dangerous-objects`               | high     | Litter, glass, needles, scrap metal, tools, anything thrown or dug up                  |
 | `dangerous-physical-challenge`    | high     | Exertion or poses beyond the game's declared intensity, breath-holding, spinning       |
 | `wildlife-and-plants`             | high     | Animals, nests, hives; mushrooms, berries, sap, thorns, nettles; picking plants        |
 | `isolation-and-separation`        | high     | Sending a player out of sight or earshot beyond what the game already declared         |
+| `unassessable-instruction`        | high     | Text the rules cannot read, or an instruction that leaves the risky choice open        |
 | `darkness-and-visibility`         | moderate | Play in the dark, in heavy weather, or where players cannot see the ground             |
 
-Severity determines the disposition:
+Severity determines the disposition of a verdict:
 
-| Severity   | Effect                                                           |
-| ---------- | ---------------------------------------------------------------- |
-| `critical` | Reject the proposal, log it, never show it to players. No retry. |
-| `high`     | Reject this proposal; the rest of the turn may proceed.          |
-| `moderate` | Reject this proposal and allow one repair attempt.               |
+| Violations found                                        | Disposition | Executed? |
+| ------------------------------------------------------- | ----------- | --------- |
+| none                                                    | `allow`     | yes       |
+| any `critical` or `high`                                | `reject`    | no        |
+| `moderate` only, no adult supervision                   | `reject`    | no        |
+| `moderate` only, host confirmed an adult is supervising | `revise`    | no        |
+
+Only `allow` lets an event through. `revise` records that the reason was a moderate one; nothing
+rewrites the event, invents a replacement, or asks the model to try again.
 
 `NON_NEGOTIABLE_HAZARDS` is **derived** from severity rather than maintained as a second hand-written
 list — a test asserts the two agree. No configuration surface, no host toggle, and no policy may
@@ -152,16 +166,19 @@ coordinate field anywhere, so an event cannot claim spatial authority. Durations
 seconds, a challenge or objective is worth 1 to 10 points, and no event can set or reduce a score.
 `.strict()` means an unexpected key is a rejection.
 
-**Layer 3 — lexical hazard matching** _(planned)_. The matcher scans every
-human-readable string an event can carry — today that is `zone` on `ZONE_CHANGE` and `description` on
-`CHALLENGE` and `BONUS_OBJECTIVE` — so the surface it has to cover is small and known. Word matching alone is both evadable and
-over-triggering, which is why it is one layer of five rather than the mechanism.
+**Layer 3 — lexical hazard matching** (`rules.ts`, `text.ts`). Every string an event can carry to
+players is checked: `zone` on `ZONE_CHANGE`, and `description` plus the model-chosen id on `CHALLENGE`
+and `BONUS_OBJECTIVE`. That is the whole surface, and a new event kind does not compile until someone
+decides which of its fields reach players. Text is normalised first (case, accents, punctuation,
+full-width characters), then matched against a table of small named rules — `road-places`, `heights`,
+`water`, `strangers`, `privacy` and so on — each tied to one hazard category. Word matching alone is
+both evadable and over-triggering, which is why it is one layer of five rather than the mechanism.
 
-**Layer 4 — structural checks** _(planned)_. These do not read text at all; they compare the proposal
-against the derived policy. Does a `CHALLENGE` introduce contact in a game whose `contactPolicy` is
-`none`? Does `durationSeconds` exceed `policy.maxRuleDurationSeconds`? Does a `ROLE_CHANGE` push a role
-past its maximum? These are exact, unevadable, and cannot
-produce a false positive.
+**Layer 4 — structural checks** (`assess.ts`). These do not interpret sentences; they compare the
+event against the derived policy. A demand (`CHALLENGE`, `BONUS_OBJECTIVE`, `RULE_MODIFIER`) may not
+last longer than `policy.maxRuleDurationSeconds`. A game that declared `contactPolicy: 'none'` is held
+to it: "high five another player" is refused in Hide & Seek and allowed in Tag. Whether a role, player
+or power exists is not a safety question; the engine has already answered it before safety runs.
 
 **Layer 5 — human authority.** `ABORT_SESSION` is legal from every non-terminal status, including the
 lobby, and `PAUSE_SESSION` from any running state. **Stopping a game is never blocked by a state
@@ -181,7 +198,7 @@ const policy = policyFor(getGameDefinition('tag'), { supervisedByAdult: true });
 
 | Field                    | Source                                                           |
 | ------------------------ | ---------------------------------------------------------------- |
-| `enforcedHazards`        | All fifteen categories, for every game                           |
+| `enforcedHazards`        | All eighteen categories, for every game                          |
 | `contactPolicy`          | Mirrors `definition.safety.contactPolicy`                        |
 | `maxIntensity`           | Mirrors `definition.safety.maxIntensity`                         |
 | `separationExpected`     | Mirrors `definition.safety.involvesSeparation`                   |
@@ -199,8 +216,12 @@ low-intensity nature walk gets 300. A demanding constraint held for five minutes
 least able player present, who is also the one least likely to say so in front of the group.
 
 **A host can tighten, never loosen.** `maxRuleDurationSeconds` clamps downward only — asking for 9,999
-yields the game ceiling. `supervisedByAdult: false` is the default, and setting it true only relaxes
-moderate-severity rules, never critical ones.
+yields the game ceiling. `supervisedByAdult: false` is the default. Setting it true changes one
+thing: a verdict whose only violations are moderate is labelled `revise` instead of `reject`. Neither
+is executed, so no host option turns a refusal into an application.
+
+The validator derives the policy itself, from the registered definition of the state's game. A caller
+passes options, never a policy and never a definition.
 
 ---
 
@@ -210,38 +231,105 @@ moderate-severity rules, never critical ones.
 interface SafetyVerdict {
   disposition: 'allow' | 'revise' | 'reject';
   violations: SafetyViolation[];
+  checkedFields: string[]; // the event fields that were examined
   policyVersion: string;
-  durationMs: number;
 }
 
 interface SafetyViolation {
   hazard: HazardCategoryId;
   severity: HazardSeverity;
-  field: string; // which proposal field triggered it
-  evidence: string; // the exact substring or condition that matched
+  rule: string; // which rule matched, e.g. "road-places"
+  field: string; // which event field triggered it
+  evidence: string; // the exact words or condition that matched
   explanation: string; // one sentence a host could read aloud
 }
 ```
 
-Four commitments are encoded in those types.
-
 **There is no "unknown".** The disposition enum has three members and none of them means "not sure".
-Anything the validator cannot classify is a reject. A game that fails closed is boring for one round;
-a game that fails open is dangerous.
+Text the rules cannot read is a violation of `unassessable-instruction`, and so is an instruction that
+leaves the choice open ("go anywhere you like", "whatever it takes"). A game that fails closed is
+boring for one round; a game that fails open is dangerous.
 
-**A verdict always carries its reasons.** `evidence` and `explanation` are both required and both
-non-empty — a test asserts a violation missing either is rejected by the schema. "Rejected" with no
-explanation is useless to a host wondering why the Game Master went quiet, and useless to us tuning a
-prompt.
+**`allow` means no rule matched.** It is not a finding that an instruction is safe where the game is
+being played.
 
-**A verdict is data.** It is logged, replayable, and testable. The same proposal and the same policy
-must always produce the same verdict.
+**A verdict always carries its reasons.** `rule`, `evidence` and `explanation` are required and
+non-empty. "Rejected" with no explanation is useless to a host wondering why the Game Master went
+quiet, and useless to us tuning a prompt.
+
+**A verdict is data, and deterministic.** The same event and the same policy always produce an
+identical verdict. It carries no timing and no other value that differs between runs, and the
+validator reads no clock, makes no network call and consults no model.
 
 **It is versioned.** `policyVersion` is stamped into every verdict so a historical log stays
-interpretable after the rule set changes — which matters because the validator's regression suite will
-replay real recorded turns against new rules.
+interpretable after the rule set changes.
 
 ---
+
+## The validator
+
+```
+raw proposal
+  → schema validation        parseGameMasterProposal   packages/ai
+  → state-aware validation   validateExternalEvent     packages/game-engine
+  → ValidatedGameEvent       legal in this game, now
+  → safety validation        validateSafety            packages/safety
+  → SafetyClearedEvent       no rule of the policy matched
+  → engine                   applyValidatedEvent       packages/game-engine
+```
+
+```ts
+assessEventSafety(event, policy): SafetyVerdict
+validateSafety(validated, state, options?): Result<SafetyClearedEvent, SafetyRejection>
+releaseClearedEvent(cleared): Result<ValidatedGameEvent, SafetyRejection>
+```
+
+- `assessEventSafety` is the pure assessment: an event and a policy in, a verdict out.
+- `validateSafety` takes an event the engine has validated. It refuses anything the engine did not
+  issue, an event validated for a different game or under a different game definition than the state names, and a state whose game is not registered
+  (`NOT_EVALUATED`). It derives the policy, assesses the event, and returns either a
+  `SafetyClearedEvent` or the verdict (`UNSAFE`).
+- A `SafetyClearedEvent` can only come from `validateSafety`. A copy, a look-alike or one rebuilt from
+  JSON is refused by `releaseClearedEvent`, which is the only way to get back the engine's validated
+  event in order to apply it. The cleared event and the event inside it are frozen.
+- The validator decides and returns a value. It does not apply events, award points, write history or
+  change the state, the definition or the event. Execution stays with the engine, which still checks
+  the event against the current state when it is applied.
+
+**The rationale is not checked and is not trusted.** A proposal's `rationale` is the model talking
+about its proposal. The validator is given the event only. A reassuring rationale ("this is safe and
+supervised") cannot clear an unsafe event, and an alarming one does not block a safe event.
+
+**Order.** Safety runs after the engine has found the event legal. An event that is both illegal and
+unsafe is reported as illegal. Engine-only events never reach safety at all.
+
+**Nothing is rewritten.** An unsafe event is refused as it stands. It is not softened, trimmed or
+replaced, and the model is not asked for another.
+
+**Nothing runs on its own.** There is no timer, schedule or trigger that asks the Game Master for a
+turn, and no player-facing execution. `runGameMasterTurn` runs when a caller calls it.
+
+---
+
+## What the validator cannot do
+
+It is a list of words and a few numeric limits. That is enough to refuse the obvious, and it is not a
+safety guarantee.
+
+- **It cannot see the place.** "The big oak" is allowed. Whether that oak stands beside a road is
+  unknown to the system and always will be.
+- **It can be evaded.** A misspelling, slang, a euphemism, or a hazard the rules do not list will not
+  match. Text in another script, text with hidden characters and text spelled out letter by letter are
+  refused as unreadable; "cl1mb" is not caught.
+- **It over-triggers on purpose.** "Stay away from the road" is refused because it mentions a road.
+  The rules do not understand sentences, and a safe instruction that has to name a hazard is refused
+  with the unsafe ones. Several ordinary words (`bridge`, `garden`, `shop`, `adult`, `night`) are
+  refused wherever they appear.
+- **It covers Game Master proposals handed off through `@touchgrass/ai/handoff`.** The engine cannot
+  depend on the safety package, so calling the engine's own `submitGameEvent` or `applyValidatedEvent`
+  directly applies a legal event without a safety check. A host's own events take that path today.
+- **It does not check display names or other player-supplied text.** Only events are assessed.
+- **It is English only.**
 
 ## The audit trail
 
@@ -249,6 +337,7 @@ Every history entry records where it came from. `HistorySource` is `'engine' | '
 'game-master'`: events the engine produces are recorded as `engine`, and an event submitted on
 behalf of the Game Master is recorded as `game-master`. The engine's tests assert both.
 
+Nothing is stored today: a verdict is returned to the caller of the hand-off and goes no further.
 Once persistence exists, it stores per session:
 
 - every event the model proposed
@@ -268,28 +357,36 @@ Being clear about the limits is part of the safety argument.
 
 | Not claimed                    | Why                                                                                                                     |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| That the application is safe   | The validator refuses what its rules recognise. Outdoor play has risks no rule list covers.                             |
 | Geofencing or map awareness    | No map, no GPS, no knowledge of the space. Players agree the boundary; the app references it.                           |
 | Supervision                    | Software cannot watch children. The boundary-walk phase and the host controls support a human; they do not replace one. |
 | Medical or fitness judgement   | The intensity ceiling is a crude proxy. It does not know who has asthma.                                                |
-| Weather and darkness detection | `requiresDaylight` is declared per game, not sensed. A weather API is a future option, not a control.                   |
-| Identity or age verification   | `supervisedByAdult` is a host assertion, not a verified fact, and it only ever tightens rules.                          |
+| Weather and darkness detection | `requiresDaylight` is declared per game, not sensed. No weather or location service is consulted.                       |
+| Identity or age verification   | `supervisedByAdult` is a host assertion, not a verified fact, and it never causes an event to be executed.              |
 
-The product's honest claim is narrower and testable: **no instruction reaches a player without passing
-a deterministic check that a human can read, reason about, and have reviewed.**
+The claim that is made is narrower and testable: **a Game Master proposal handed off through
+`@touchgrass/ai/handoff` reaches the engine only after a deterministic check that a human can read,
+reason about, and have reviewed.**
 
 ---
 
-## Validator scope (planned)
+## Where it lives
 
-| Deliverable                                                | Location                               |
-| ---------------------------------------------------------- | -------------------------------------- |
-| Lexical hazard matcher over event text fields              | `packages/safety/src/lexical.ts`       |
-| Structural checks against the derived policy               | `packages/safety/src/structural.ts`    |
-| `validateProposal()` composing both into a `SafetyVerdict` | `packages/safety/src/validate.ts`      |
-| An adversarial corpus: proposals that must be rejected     | `packages/safety/src/__fixtures__/`    |
-| False-positive corpus: safe proposals that must be allowed | same                                   |
-| Golden tests over recorded real Gemma output               | `packages/safety/src/validate.test.ts` |
+| Piece                                                       | Location                             |
+| ----------------------------------------------------------- | ------------------------------------ |
+| Hazard taxonomy                                             | `packages/safety/src/hazards.ts`     |
+| Policy derivation                                           | `packages/safety/src/policy.ts`      |
+| Verdict contract                                            | `packages/safety/src/verdict.ts`     |
+| Text normalisation and the "cannot be read" check           | `packages/safety/src/text.ts`        |
+| Lexical rules                                               | `packages/safety/src/rules.ts`       |
+| `assessEventSafety`: text and structural checks → a verdict | `packages/safety/src/assess.ts`      |
+| `validateSafety`, `SafetyClearedEvent`                      | `packages/safety/src/clearance.ts`   |
+| The hand-off that calls it before the engine                | `packages/ai/src/handoff/handoff.ts` |
 
-The two corpora matter equally. A validator that rejects everything is trivially "safe" and useless —
-it would mean no twists, which means no product. The false-positive suite is what keeps the rules
-honest.
+The tests hold two lists that matter equally: instructions that must be refused, and instructions that
+must be allowed, including text the real `gemma3:4b` model produced ("Touch the gate and shout your
+name.", "the old oak tree"). A validator that rejects everything is trivially "safe" and useless — it
+would mean no twists, which means no product.
+
+Not built: storing verdicts (there is no persistence), showing a refusal to a host (there is no game
+UI), and any evaluation of the rules against a larger recorded corpus of model output.

@@ -85,10 +85,14 @@ flowchart TD
     Zod{"Zod validation<br/>gameEventSchema"}
     Zod -- invalid --> Repair["Repair loop<br/>(bounded retries)"]
     Repair --> Model
-    Zod -- valid --> Safety
+    Zod -- valid --> Domain
 
-    Safety{"Safety validation<br/><i>planned — later phase</i>"}
-    Safety -- reject --> Audit["Logged, never shown"]
+    Domain{"State-aware validation<br/>engine: legal in this game, now?"}
+    Domain -- illegal --> Refused["Refused. State unchanged."]
+    Domain -- legal --> Safety
+
+    Safety{"Safety validation<br/>deterministic rules, no model"}
+    Safety -- "reject / revise" --> Refused
     Safety -- allow --> Engine
 
     Engine["Game engine<br/>pure reducer"] --> NewState["New session state<br/>+ append-only log"]
@@ -109,9 +113,10 @@ Three properties hold at every arrow:
 
 ## 4. Agent architecture
 
-> **Status (Phase 3B):** the Game Master returns proposals, and a proposal can be handed to the
-> engine, which validates it against the game before applying it. There is no safety validator, and
-> nothing in the app calls the Game Master during a game. See [AI.md](./AI.md).
+> **Status (Phase 4):** the Game Master returns proposals, and a proposal can be handed off: the
+> engine validates it against the game, the safety validator checks it against the game's safety
+> policy, and the engine then applies it. Nothing in the app calls the Game Master during a game.
+> See [AI.md](./AI.md).
 
 An "agent" in this project is narrow and deliberately unglamorous: a component that observes game
 state, decides whether to act, and emits a structured proposal into a validation pipeline. It has no
@@ -144,14 +149,17 @@ What is in place:
   and a small adapter that presents it to Mastra.
 
 - **The hand-off** (`packages/ai/src/handoff/`) — passes a proposal to the engine's
-  `validateExternalEvent` and, only if the engine accepts it, to `applyValidatedEvent`. It holds no
-  game rules. Schema-valid does not mean game-valid: the engine refuses proposals that name players,
-  roles or powers that do not exist.
+  `validateExternalEvent`, then to the safety package's `validateSafety`, and only if both accept
+  it to the engine's `applyValidatedEvent`. It holds no game rules and no safety rules.
+  Schema-valid does not mean game-valid: the engine refuses proposals that name players, roles or
+  powers that do not exist. Domain-valid does not mean safe: the safety validator refuses a legal
+  event whose text or duration matches a safety rule.
 
-**AI proposes; deterministic validation decides; the game engine executes.**
+**AI proposes; schema checks shape; domain validation checks legality; safety validation checks
+real-world risk; the deterministic engine executes.**
 
-What is not in place: any code that calls the Game Master during a game, and the safety validator.
-Until the safety validator exists, an applied proposal has been checked for legality only.
+What is not in place: any code that calls the Game Master during a game. There is no timer, schedule
+or trigger; a turn happens only when a caller asks for one.
 
 ### Why one agent, not several
 
@@ -243,7 +251,8 @@ order give the same roles on any host.
 | Zones and freeze periods                          | Stored and expired only; nothing is enforced                     |
 | Ice & Fire, Treasure Hunt, Nature Challenge rules | Not designed; definitions are valid but have no rules or scoring |
 | Game Master, Mastra, Gemma                        | Phase 3                                                          |
-| Safety validator, realtime, persistence           | Later                                                            |
+| Safety validator                                  | Phase 4, in `packages/safety`; the engine does not depend on it  |
+| Realtime, persistence                             | Later                                                            |
 
 ---
 
@@ -257,8 +266,21 @@ of another model's output. Safety is a synchronous, deterministic function over 
 time out, and get skipped under load.
 
 **Safety is a separate pass from schema validation.** Zod answers "is this the right shape". Safety
-answers "should a child in a field hear this". A perfectly well-formed `MODIFIER` saying _"cross the
-road and touch the far pavement"_ passes Zod and must be rejected by safety.
+answers "should a child in a field hear this". A perfectly well-formed `BONUS_OBJECTIVE` saying
+_"cross the road and touch the far pavement"_ passes Zod, is legal in Tag, and is rejected by safety.
+
+**Safety is a separate pass from domain validation, and runs after it.** The engine's
+`ValidatedGameEvent` is the input to safety, not the thing that gets applied. `validateSafety` issues
+a `SafetyClearedEvent`, which like the engine's token cannot be constructed, copied or rebuilt from
+JSON, and the hand-off gives the engine only what the safety package releases from one.
+
+**Safety decides; it does not execute.** The safety package applies nothing and changes no state. It
+imports one engine function, the check that a value is a genuine `ValidatedGameEvent`.
+
+**The guarantee lives in the hand-off, not in the engine.** The engine cannot import the safety
+package without a cycle, so `submitGameEvent` and `applyValidatedEvent` called directly apply a legal
+event with no safety check. Game Master proposals go through `@touchgrass/ai/handoff`; anything that
+later lets other free text reach players must go through the safety validator too.
 
 **Policy is derived, never hand-assembled.** `policyFor(definition)` produces the policy from the
 game's own declared contact limits, intensity ceiling, and separation expectations. A host can make a
@@ -267,23 +289,22 @@ session stricter; the schema refuses any policy that drops a critical hazard cat
 
 ```mermaid
 flowchart LR
-    Proposal["Validated proposal"] --> Lex["Lexical pass<br/>hazard signals over<br/>every text fragment"]
-    Proposal --> Struct["Structural pass<br/>contact policy, intensity,<br/>duration, role validity"]
+    Proposal["ValidatedGameEvent<br/>legal in the game"] --> Lex["Lexical rules<br/>over every text field<br/>that reaches players"]
+    Proposal --> Struct["Structural checks<br/>duration of a demand,<br/>declared contact policy"]
     Lex --> Verdict
     Struct --> Verdict
-    Policy["SafetyPolicy<br/>derived from definition"] --> Lex
+    Policy["SafetyPolicy<br/>derived from the registered definition"] --> Lex
     Policy --> Struct
     Verdict{"SafetyVerdict"}
-    Verdict -- allow --> Engine["Engine"]
-    Verdict -- revise --> Repair["One repair attempt"]
-    Verdict -- reject --> Log["Audit log only"]
+    Verdict -- allow --> Cleared["SafetyClearedEvent"] --> Engine["Engine"]
+    Verdict -- "revise / reject" --> Refused["Refused. Nothing applied,<br/>nothing rewritten."]
 ```
 
-**Phase 1 ships the taxonomy and the contracts; a later phase ships the rules.** Fifteen hazard
-categories with severity, rationale, and example signals; the three-way verdict type; policy
-derivation. The matching engine is not scheduled before the Game Master (Phase 3) — deciding _what_
-counts as a hazard was the hard part, and writing rules against a fixed taxonomy is the mechanical
-part.
+**What exists.** Eighteen hazard categories with severity, rationale and example signals; policy
+derivation; the verdict type; a table of lexical rules; structural checks; and the clearance
+boundary. Text the rules cannot read is refused rather than passed. The validator is a word list and
+a few limits: it cannot see the place a game is played and it can be evaded, so it is one layer and
+not a guarantee. [SAFETY.md](./SAFETY.md) lists what it cannot do.
 
 ---
 
@@ -483,7 +504,7 @@ scripted fallback; malformed JSON needs a retry.
 | 5xx from the runtime             | `PROVIDER_HTTP_ERROR`       | Retried within budget.                                                                      |
 | Completion is not JSON           | `OUTPUT_NOT_JSON`           | Counts as an attempt and enters the same repair loop; the raw text is kept on the failure.  |
 | Valid JSON, fails Zod            | `OUTPUT_SCHEMA_INVALID`     | **Repair loop**: the model is told which fields were wrong, once. Then the turn is dropped. |
-| Passes Zod, fails safety         | `revise` / `reject` verdict | `revise` → one repair attempt. `reject` → logged, never shown to players.                   |
+| Legal in the game, fails safety  | `revise` / `reject` verdict | Refused at the `SAFETY` stage with the verdict. Nothing applied; the model is not re-asked. |
 | Illegal input reaches the engine | a typed `EngineError` code  | Refused as a `Result` value. State is untouched.                                            |
 | Environment is invalid           | `CONFIGURATION_INVALID`     | **Fatal at startup**, naming the offending variable. Never a mid-game surprise.             |
 
@@ -505,12 +526,13 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                                  | Status       |
-| ------- | ---------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                           | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable            | **Complete** |
-| Phase 3 | Game Master. 3A (local Gemma + Mastra, returns proposals) and 3B (state-aware validation and engine hand-off) are done | In progress  |
-| Later   | Safety validator, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment — not scheduled               | Planned      |
+| Phase   | Scope                                                                                                         | Status       |
+| ------- | ------------------------------------------------------------------------------------------------------------- | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                  | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable   | **Complete** |
+| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)   | **Complete** |
+| Phase 4 | Deterministic safety validator between domain validation and the engine                                       | **Complete** |
+| Later   | Calling the Game Master during a game, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

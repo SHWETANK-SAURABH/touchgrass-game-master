@@ -11,19 +11,20 @@ the bench you are standing next to.
 Everything it proposes is checked by deterministic code before a single player hears it.
 
 ```
-AI proposes  →  Zod validates  →  Safety validates  →  Engine executes  →  Players act
+AI proposes  →  Zod checks shape  →  Engine checks legality  →  Safety checks risk  →  Engine executes
 ```
 
 The model never touches game state. That is the whole architecture in one line, and the reason the
 pieces are split the way they are.
 
-> **Status: Phase 3B — validated hand-off.** Tag and Hide & Seek are fully playable through the
+> **Status: Phase 4 — safety validator.** Tag and Hide & Seek are fully playable through the
 > deterministic engine with no AI. A Game Master — a Mastra agent running Gemma through a local
-> Ollama — reads a game and returns a structured event proposal, and a proposal can be handed to the
-> engine, which applies it only if it is legal in the game. **Not built yet:** the safety validator,
+> Ollama — reads a game and returns a structured event proposal. A proposal can be handed off: the
+> engine checks that it is legal, a deterministic safety validator checks it against the game's
+> safety policy, and the engine applies it only if both pass. The safety validator is a fixed set of
+> rules, not a guarantee that play is safe — see [SAFETY.md](./SAFETY.md). **Not built yet:**
 > anything in the app that calls the Game Master, realtime multiplayer, persistence, and a game UI.
-> See
-> [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
+> See [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---
 
@@ -100,23 +101,24 @@ packages/
   shared/                 Result, seeded RNG, clock, ids, logger, env schema
   game-definitions/       GameDefinition schema + the five games, as data
   game-engine/            Deterministic engine: actions, events, time, scoring, winners
-  safety/                 Hazard taxonomy, policy derivation, verdict contract
+  safety/                 Hazard taxonomy, policy, and the deterministic safety validator
   ai/                     ModelProvider + adapters, and the Game Master (Mastra agent)
 ```
 
 Imports between workspaces, as they are in the code today (no cycles):
 
-| Workspace          | Imports                                      |
-| ------------------ | -------------------------------------------- |
-| `shared`           | nothing                                      |
-| `game-definitions` | nothing                                      |
-| `game-engine`      | `game-definitions`, `shared`                 |
-| `safety`           | `game-definitions`                           |
-| `ai`               | `shared` (and `game-engine` in tests only)   |
-| `apps/web`         | `ai`, `game-definitions`, `safety`, `shared` |
+| Workspace          | Imports                                               |
+| ------------------ | ----------------------------------------------------- |
+| `shared`           | nothing                                               |
+| `game-definitions` | nothing                                               |
+| `game-engine`      | `game-definitions`, `shared`                          |
+| `safety`           | `game-definitions`, `game-engine`, `shared`           |
+| `ai`               | `game-definitions`, `game-engine`, `safety`, `shared` |
+| `apps/web`         | `ai`, `game-definitions`, `safety`, `shared`          |
 
 The engine imports nothing from `ai` or `safety`, so it can be read, tested, and trusted without
-opening a line of AI code. The game event schema a model's output must satisfy lives in the engine;
+opening a line of AI code. `safety` uses the engine's event types and one function that recognises
+an engine-validated event; it calls nothing that changes a game. The game event schema a model's output must satisfy lives in the engine;
 the AI package's tests validate generated output against it.
 
 There is deliberately **no `realtime/` or `database/` package yet.** An empty package that exists to
@@ -164,8 +166,8 @@ roles, phases and safety profile rendered from the definition itself.
 
 1. **Deterministic logic lives outside the model.** The engine is a pure function; all randomness
    and clock access is injected, so a session replays identically from its log.
-2. **Raw model output is never trusted.** Grammar-constrained decoding, then Zod, then a separate
-   deterministic safety pass.
+2. **Raw model output is never trusted.** Grammar-constrained decoding, then Zod, then the engine's
+   legality check, then a separate deterministic safety pass.
 3. **The model is replaceable.** Nothing outside `packages/ai/src/provider/` names a runtime.
 4. **No fake integrations.** If a dependency is not used yet, it is not installed yet.
 5. **Fail closed, and say why.** Every refusal carries a machine-readable code and a sentence a

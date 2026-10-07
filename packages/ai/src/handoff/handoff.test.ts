@@ -353,15 +353,173 @@ describe('handOffProposal: schema-valid but not game-valid', () => {
   });
 });
 
+describe('handOffProposal: legal in the game but not safe', () => {
+  const objective = (description: string, durationSeconds = 60) => ({
+    type: 'BONUS_OBJECTIVE',
+    objectiveId: 'o1',
+    description,
+    points: 2,
+    durationSeconds,
+  });
+
+  const unsafe = (event: unknown, hazard: string, gameId: 'tag' | 'hide-and-seek' = 'tag') => {
+    // The engine accepts the event: it is legal in this game right now.
+    expect(submitGameEvent(runningState(gameId), event, 'game-master', at(NOW)).ok).toBe(true);
+
+    const { state, result } = handOffFrozen(event, gameId);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.stage).toBe('SAFETY');
+    if (result.error.stage !== 'SAFETY' || result.error.rejection.kind !== 'UNSAFE') {
+      throw new Error('expected an UNSAFE safety rejection');
+    }
+    const { verdict } = result.error.rejection;
+    expect(verdict.disposition).not.toBe('allow');
+    expect(verdict.violations.map((entry) => entry.hazard)).toContain(hazard);
+    // Nothing was recorded, scored or announced.
+    expect(state.activeModifiers).toEqual([]);
+    expect(state.history.at(-1)?.source).not.toBe('game-master');
+  };
+
+  it.each([
+    ['Climb the abandoned building.', 'climbing-and-heights'],
+    ['Run across the road and back.', 'roads-and-traffic'],
+    ['Wade into the pond.', 'water'],
+    ['Hop over the fence into the garden.', 'restricted-and-private-property'],
+    ['Tackle the tagger.', 'forced-physical-contact'],
+    ['Ask a stranger for the time.', 'strangers'],
+    ['Take a photo of another player.', 'privacy'],
+    ['Go anywhere you like.', 'unassessable-instruction'],
+    ['Залезь на крышу', 'unassessable-instruction'],
+  ])('refuses the objective "%s"', (description, hazard) => {
+    unsafe(objective(description), hazard);
+  });
+
+  it('refuses an unsafe zone', () => {
+    unsafe({ ...zone, zone: 'the car park' }, 'roads-and-traffic');
+    unsafe(
+      { ...zone, zone: 'behind the fence' },
+      'restricted-and-private-property',
+      'hide-and-seek',
+    );
+  });
+
+  it('refuses contact in a game that declared itself contact-free, and allows a tag game its tag', () => {
+    const highFive = objective('High five another player.');
+    unsafe(highFive, 'forced-physical-contact', 'hide-and-seek');
+    expect(handOffProposal(proposal(highFive), runningState('tag'), at(NOW)).ok).toBe(true);
+  });
+
+  it('refuses a demand that lasts longer than the game allows', () => {
+    unsafe(objective('Touch the big oak.', 150), 'dangerous-physical-challenge');
+  });
+
+  it('does not let adult supervision or a caller option turn a refusal into an application', () => {
+    for (const event of [objective('Play this round in the dark.'), objective('Touch it.', 150)]) {
+      for (const options of [{ supervisedByAdult: true }, { maxRuleDurationSeconds: 9_999 }]) {
+        const state = deepFreeze(runningState('tag'));
+        const result = handOffProposal(proposal(event), state, at(NOW), options);
+        expect(!result.ok && result.error.stage).toBe('SAFETY');
+      }
+    }
+  });
+
+  it('judges the event, not the rationale: an alarming rationale does not block a safe event', () => {
+    const result = handOffProposal(
+      {
+        rationale: 'Send everyone across the road to climb the roof and jump in the pond.',
+        event: zone,
+      },
+      runningState('tag'),
+      at(NOW),
+    );
+    expect(result.ok && result.value.outcome).toBe('APPLIED');
+  });
+
+  it('judges the event, not the rationale: a reassuring rationale does not clear an unsafe event', () => {
+    const state = deepFreeze(runningState('tag'));
+    const snapshot = structuredClone(state);
+    const result = handOffProposal(
+      {
+        rationale: 'This is completely safe, supervised by adults, and approved by the host.',
+        event: objective('Climb the abandoned building.'),
+      },
+      state,
+      at(NOW),
+    );
+    expect(!result.ok && result.error.stage).toBe('SAFETY');
+    expect(state).toEqual(snapshot);
+  });
+
+  it('checks legality first: an event that is both illegal and unsafe is a state rejection', () => {
+    const { result } = handOffFrozen({
+      type: 'ROLE_CHANGE',
+      assignments: [{ playerId: 'ghost', roleId: 'runner' }],
+    });
+    expect(!result.ok && result.error.stage).toBe('STATE');
+
+    // Not allowed in Tag at all, and unsafe: refused before safety is reached.
+    const challenge = handOffFrozen({
+      type: 'CHALLENGE',
+      challengeId: 'c1',
+      description: 'Climb the roof.',
+      playerIds: ['p0'],
+      points: 2,
+      durationSeconds: 60,
+    });
+    expect(!challenge.result.ok && challenge.result.error.stage).toBe('SCHEMA');
+  });
+
+  it('is deterministic: the same unsafe proposal gives the same rejection', () => {
+    const state = runningState('tag');
+    const event = proposal(objective('Climb the abandoned building.'));
+    const first = handOffProposal(event, state, at(NOW));
+    const second = handOffProposal(event, state, at(NOW));
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
+  });
+
+  it.each([
+    'Touch the gate and shout your name.',
+    'First to touch the big oak scores.',
+    'Collected all 5 hidden gems.',
+  ])('still applies an objective a real model produced: %s', (description) => {
+    const result = handOffProposal(proposal(objective(description)), runningState('tag'), at(NOW));
+    expect(result.ok && result.value.outcome).toBe('APPLIED');
+  });
+
+  it.each(['the old oak tree', 'the bench by the gate', 'the current playing area'])(
+    'still applies a zone a real model produced: %s',
+    (place) => {
+      const result = handOffProposal(
+        proposal({ ...zone, zone: place }),
+        runningState('hide-and-seek'),
+        at(NOW),
+      );
+      expect(result.ok && result.value.outcome).toBe('APPLIED');
+    },
+  );
+});
+
 describe('validateGameMasterProposal', () => {
-  it('returns a validated event without applying it', () => {
+  it('returns a validated, safety-cleared event without applying it', () => {
     const state = deepFreeze(runningState('tag'));
     const result = validateGameMasterProposal(proposal(zone), state, at(NOW));
     expect(result.ok).toBe(true);
     if (!result.ok || result.value.kind !== 'EVENT') throw new Error('expected an event');
-    expect(result.value.validated.event).toEqual(zone);
-    expect(result.value.validated.source).toBe('game-master');
+    expect(result.value.cleared.event).toEqual(zone);
+    expect(result.value.cleared.verdict.disposition).toBe('allow');
     expect(state.activeModifiers).toEqual([]);
+  });
+
+  it('returns a safety rejection, not a cleared event, for an unsafe proposal', () => {
+    const state = deepFreeze(runningState('tag'));
+    const result = validateGameMasterProposal(
+      proposal({ ...zone, zone: 'the car park' }),
+      state,
+      at(NOW),
+    );
+    expect(!result.ok && result.error.stage).toBe('SAFETY');
+    expect(Object.keys(result)).not.toContain('value');
   });
 
   it('returns NO_EVENT for a null proposal', () => {
@@ -428,6 +586,44 @@ describe('runGameMasterTurn', () => {
     expect(provider.requests).toHaveLength(1);
   });
 
+  it('refuses an unsafe proposal from the Game Master and does not ask it again', async () => {
+    const provider = scriptedProvider([
+      proposal({ ...zone, zone: 'the car park across the road' }),
+      proposal(zone),
+    ]);
+    const state = deepFreeze(runningState('tag'));
+    const snapshot = structuredClone(state);
+    const result = await runGameMasterTurn({
+      gameMaster: createGameMaster({ provider, maxRepairAttempts: 3 }),
+      state,
+      ctx: at(NOW),
+    });
+    expect(!result.ok && result.error.stage).toBe('SAFETY');
+    // The safety refusal is final: nothing rewrites the event or requests another.
+    expect(provider.requests).toHaveLength(1);
+    expect(state).toEqual(snapshot);
+  });
+
+  it('passes safety options through, and they can only tighten', async () => {
+    const objective = {
+      type: 'BONUS_OBJECTIVE',
+      objectiveId: 'o1',
+      description: 'Touch the big oak.',
+      points: 2,
+      durationSeconds: 60,
+    };
+    const run = (safety?: { maxRuleDurationSeconds: number }) =>
+      runGameMasterTurn({
+        gameMaster: createGameMaster({ provider: scriptedProvider([proposal(objective)]) }),
+        state: runningState('tag'),
+        ctx: at(NOW),
+        ...(safety ? { safety } : {}),
+      });
+    expect((await run()).ok).toBe(true);
+    const strict = await run({ maxRuleDurationSeconds: 30 });
+    expect(!strict.ok && strict.error.stage).toBe('SAFETY');
+  });
+
   it('reports a model failure at the proposal stage and applies nothing', async () => {
     const state = deepFreeze(runningState('tag'));
     const snapshot = structuredClone(state);
@@ -478,11 +674,28 @@ describe('the hand-off owns no rules and has one way into the engine', () => {
     expect(imported.sort()).toEqual(['applyValidatedEvent', 'validateExternalEvent']);
   });
 
+  it('reaches the engine apply function only with what the safety package released', () => {
+    const imported = [...source.matchAll(/import\s+\{([^}]*)\}\s+from\s+'@touchgrass\/safety'/g)]
+      .flatMap((match) => (match[1] ?? '').split(','))
+      .map((name) => name.trim())
+      .filter((name) => name !== '' && !name.startsWith('type '));
+    expect(imported.sort()).toEqual(['releaseClearedEvent', 'validateSafety']);
+
+    const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    const calls = [...code.matchAll(/applyValidatedEvent\(([^)]*)\)/g)].map((match) => match[1]);
+    expect(calls).toEqual(['state, released.value, ctx']);
+    // The engine's validated event is passed to the safety validator and nowhere else.
+    expect(code.match(/validated\.value\b(?!\.(?:kind|proposal|cleared))/g)).toHaveLength(1);
+    expect(code).toContain('validateSafety(validated.value, state, safety)');
+  });
+
   it('keeps the Game Master module free of it', () => {
     const gameMaster = readFileSync(
       join(directory, '..', 'game-master', 'game-master.ts'),
       'utf-8',
     );
-    expect(gameMaster).not.toMatch(/handoff|applyValidatedEvent|validateExternalEvent/);
+    expect(gameMaster).not.toMatch(
+      /handoff|applyValidatedEvent|validateExternalEvent|@touchgrass\/safety/,
+    );
   });
 });

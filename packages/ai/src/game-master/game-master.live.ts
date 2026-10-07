@@ -279,7 +279,7 @@ describe(`live boundary: what real ${env.MODEL_NAME} can get past the schema`, (
 });
 
 /**
- * The full Phase 3B path with the real model: a real proposal is validated
+ * The full hand-off with the real model: a real proposal is validated
  * against the game by the engine and, only if accepted, applied by the engine.
  * A refusal by the engine is a correct outcome here, not a test failure; what is
  * asserted is that a refusal leaves the game exactly as it was.

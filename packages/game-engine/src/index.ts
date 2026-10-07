@@ -106,6 +106,7 @@ export {
   type ValidatedGameEvent,
   validateExternalEvent,
   applyValidatedEvent,
+  isValidatedGameEvent,
 } from './external-events';
 
 export {

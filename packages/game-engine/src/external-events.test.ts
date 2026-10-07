@@ -4,6 +4,7 @@ import { submitGameEvent } from './engine';
 import {
   type ValidatedGameEvent,
   applyValidatedEvent,
+  isValidatedGameEvent,
   validateExternalEvent,
 } from './external-events';
 import { processPlayerAction } from './process-action';
@@ -380,6 +381,48 @@ describe('applyValidatedEvent', () => {
     must(applyValidatedEvent(state, validated, at(NOW)));
     applyValidatedEvent(state, { ...validated }, at(NOW));
     expect(state).toEqual(snapshot);
+  });
+});
+
+describe('isValidatedGameEvent', () => {
+  it('is true only for a value the engine issued', () => {
+    const state = started('tag', 3);
+    const validated = must(validate(state, zone));
+    expect(isValidatedGameEvent(validated)).toBe(true);
+    expect(validated.definitionId).toBe('tag');
+    for (const fake of [
+      { ...validated },
+      JSON.parse(JSON.stringify(validated)) as unknown,
+      zone,
+      null,
+      undefined,
+      'ZONE_CHANGE',
+    ]) {
+      expect(isValidatedGameEvent(fake)).toBe(false);
+    }
+  });
+
+  it('issues an event that cannot be edited between validation and application', () => {
+    const state = started('tag', 3);
+    const validated = must(
+      validate(state, {
+        type: 'ROLE_CHANGE',
+        assignments: [
+          { playerId: holders(state, 'runner')[0], roleId: 'tagger' },
+          { playerId: holders(state, 'tagger')[0], roleId: 'runner' },
+        ],
+      }),
+    );
+    const event = validated.event as { type: string; assignments: { roleId: string }[] };
+    expect(() => {
+      event.type = 'TIME_EXTENSION';
+    }).toThrow(TypeError);
+    expect(() => {
+      event.assignments.push({ roleId: 'tagger' });
+    }).toThrow(TypeError);
+    expect(() => {
+      (event.assignments[0] as { roleId: string }).roleId = 'runner';
+    }).toThrow(TypeError);
   });
 });
 

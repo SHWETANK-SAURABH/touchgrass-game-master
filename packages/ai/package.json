@@ -15,6 +15,7 @@
     "@mastra/core": "^1.75.0",
     "@touchgrass/game-definitions": "*",
     "@touchgrass/game-engine": "*",
+    "@touchgrass/safety": "*",
     "@touchgrass/shared": "*",
     "zod": "^4.6.5"
   }

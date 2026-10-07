@@ -16,6 +16,7 @@ describe('hazard taxonomy', () => {
     // assertion forces the document and the code to move together.
     expect([...HAZARD_CATEGORY_IDS].sort()).toEqual(
       [
+        'aggression-and-harassment',
         'climbing-and-heights',
         'dangerous-objects',
         'dangerous-physical-challenge',
@@ -24,10 +25,12 @@ describe('hazard taxonomy', () => {
         'forced-physical-contact',
         'ingestion',
         'isolation-and-separation',
+        'privacy',
         'restricted-and-private-property',
         'roads-and-traffic',
         'sensory-deprivation',
         'strangers',
+        'unassessable-instruction',
         'water',
         'weapons',
         'wildlife-and-plants',
@@ -144,8 +147,9 @@ describe('verdict contract', () => {
   const violation = {
     hazard: 'roads-and-traffic' as const,
     severity: 'critical' as const,
-    field: 'rule',
-    evidence: 'cross the road',
+    rule: 'road-places',
+    field: 'description',
+    evidence: 'road',
     explanation: 'The twist would send players across a road.',
   };
 
@@ -153,8 +157,8 @@ describe('verdict contract', () => {
     const verdict = {
       disposition: 'allow' as const,
       violations: [],
+      checkedFields: ['description'],
       policyVersion: POLICY_VERSION,
-      durationMs: 0.4,
     };
     expect(safetyVerdictSchema.safeParse(verdict).success).toBe(true);
     expect(isAllowed(safetyVerdictSchema.parse(verdict))).toBe(true);
@@ -165,19 +169,30 @@ describe('verdict contract', () => {
       safetyVerdictSchema.safeParse({
         disposition: 'reject',
         violations: [{ ...violation, evidence: '' }],
+        checkedFields: ['description'],
         policyVersion: POLICY_VERSION,
-        durationMs: 1,
       }).success,
     ).toBe(false);
 
     expect(
       safetyVerdictSchema.safeParse({
         disposition: 'reject',
-        violations: [{ hazard: 'water', severity: 'critical', field: 'rule' }],
+        violations: [
+          { hazard: 'water', severity: 'critical', rule: 'water', field: 'description' },
+        ],
+        checkedFields: ['description'],
         policyVersion: POLICY_VERSION,
-        durationMs: 1,
       }).success,
     ).toBe(false);
+  });
+
+  it('carries no timing, so the same input always gives an identical verdict', () => {
+    expect(Object.keys(safetyVerdictSchema.shape).sort()).toEqual([
+      'checkedFields',
+      'disposition',
+      'policyVersion',
+      'violations',
+    ]);
   });
 
   it('has no disposition for "do not know"', () => {
@@ -185,8 +200,8 @@ describe('verdict contract', () => {
       safetyVerdictSchema.safeParse({
         disposition: 'unknown',
         violations: [],
+        checkedFields: ['description'],
         policyVersion: POLICY_VERSION,
-        durationMs: 1,
       }).success,
     ).toBe(false);
   });
@@ -195,14 +210,14 @@ describe('verdict contract', () => {
     const revise = safetyVerdictSchema.parse({
       disposition: 'revise',
       violations: [{ ...violation, severity: 'moderate', hazard: 'darkness-and-visibility' }],
+      checkedFields: ['description'],
       policyVersion: POLICY_VERSION,
-      durationMs: 1,
     });
     const reject = safetyVerdictSchema.parse({
       disposition: 'reject',
       violations: [violation],
+      checkedFields: ['description'],
       policyVersion: POLICY_VERSION,
-      durationMs: 1,
     });
     expect(isRepairable(revise)).toBe(true);
     expect(isRepairable(reject)).toBe(false);
@@ -217,8 +232,8 @@ describe('verdict contract', () => {
         { ...violation, hazard: 'dangerous-objects', severity: 'high' },
         violation,
       ],
+      checkedFields: ['description'],
       policyVersion: POLICY_VERSION,
-      durationMs: 2,
     });
     expect(worstViolation(verdict)?.hazard).toBe('roads-and-traffic');
   });
@@ -227,8 +242,8 @@ describe('verdict contract', () => {
     const verdict = safetyVerdictSchema.parse({
       disposition: 'allow',
       violations: [],
+      checkedFields: ['description'],
       policyVersion: POLICY_VERSION,
-      durationMs: 0,
     });
     expect(worstViolation(verdict)).toBeUndefined();
   });
