@@ -102,6 +102,13 @@ export { eventsForAction, processPlayerAction } from './process-action';
 export { advanceTime } from './time';
 
 export {
+  type ExternalEventSource,
+  type ValidatedGameEvent,
+  validateExternalEvent,
+  applyValidatedEvent,
+} from './external-events';
+
+export {
   type EngineInput,
   type TimedInput,
   contextAt,

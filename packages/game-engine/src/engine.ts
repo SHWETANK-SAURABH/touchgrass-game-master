@@ -1,9 +1,12 @@
-import { type Clock, type Result, err, ok } from '@touchgrass/shared';
-import { getGameDefinition, isOptionalEventKind } from '@touchgrass/game-definitions';
-import { type EngineContext, applyEvent } from './apply-event';
+import { type Clock, type Result, ok } from '@touchgrass/shared';
+import type { EngineContext } from './apply-event';
 import type { CreateSessionCommand, SessionCommand } from './commands';
-import { type EngineError, engineError } from './errors';
-import { parseGameEvent } from './events';
+import type { EngineError } from './errors';
+import {
+  type ExternalEventSource,
+  applyValidatedEvent,
+  validateExternalEvent,
+} from './external-events';
 import { processPlayerAction } from './process-action';
 import { createSession, reduce } from './reduce';
 import type { GameState } from './state';
@@ -17,7 +20,8 @@ import { advanceTime } from './time';
  *
  *   a host command    → reduce
  *   a player action   → processPlayerAction
- *   an external event → submitGameEvent
+ *   an external event → validateExternalEvent, then applyValidatedEvent
+ *                       (or submitGameEvent, which does both)
  *   the time          → advanceTime
  *
  * `step` dispatches between them, and `replay` runs a recorded list of inputs
@@ -34,41 +38,19 @@ export function contextAt(clock: Clock): EngineContext {
 }
 
 /**
- * Applies a game event that came from outside the engine: a host today, the
- * Game Master in a later phase. The input is untrusted.
- *
- * Only the optional event kinds are accepted. Lifecycle events and the events
- * derived from player actions belong to the engine, and an outside event may not
- * claim a cause — otherwise it could award itself the points of a tag.
+ * Validates and applies an external event in one call: `validateExternalEvent`
+ * followed by `applyValidatedEvent`. The input is untrusted. Callers that need to
+ * see the validated event before it is applied use those two functions directly.
  */
 export function submitGameEvent(
   state: GameState,
   input: unknown,
-  source: 'human' | 'game-master',
+  source: ExternalEventSource,
   ctx: EngineContext,
 ): Result<GameState, EngineError> {
-  const parsed = parseGameEvent(input);
-  if (!parsed.ok) return parsed;
-  const event = parsed.value;
-
-  if (!isOptionalEventKind(event.type)) {
-    return err(
-      engineError('UNSUPPORTED_EVENT', `${event.type} can only be produced by the engine.`, {
-        type: event.type,
-      }),
-    );
-  }
-  if (event.type === 'ROLE_CHANGE' && event.cause) {
-    return err(
-      engineError('INVALID_EVENT', 'An external ROLE_CHANGE may not carry a cause.', {
-        type: event.type,
-      }),
-    );
-  }
-
-  const advanced = advanceTime(state, ctx);
-  if (!advanced.ok) return advanced;
-  return applyEvent(advanced.value, getGameDefinition(state.gameId), event, source, ctx);
+  const validated = validateExternalEvent(state, input, source, ctx);
+  if (!validated.ok) return validated;
+  return applyValidatedEvent(state, validated.value, ctx);
 }
 
 /** One input to a game. Actions and events are untrusted and validated on the way in. */
@@ -78,7 +60,7 @@ export type EngineInput =
   | {
       readonly type: 'EVENT';
       readonly event: unknown;
-      readonly source: 'human' | 'game-master';
+      readonly source: ExternalEventSource;
     }
   | { readonly type: 'ADVANCE_TIME' };
 

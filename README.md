@@ -17,11 +17,12 @@ AI proposes  →  Zod validates  →  Safety validates  →  Engine executes  �
 The model never touches game state. That is the whole architecture in one line, and the reason the
 pieces are split the way they are.
 
-> **Status: Phase 3A — local Game Master.** Tag and Hide & Seek are fully playable through the
-> deterministic engine with no AI. A Game Master now exists — a Mastra agent running Gemma through
-> a local Ollama — that reads a game and returns a structured event proposal. **It is not connected
-> to a game yet:** nothing passes a proposal to the engine, and there is no safety validator,
-> realtime multiplayer, persistence, or game UI. See
+> **Status: Phase 3B — validated hand-off.** Tag and Hide & Seek are fully playable through the
+> deterministic engine with no AI. A Game Master — a Mastra agent running Gemma through a local
+> Ollama — reads a game and returns a structured event proposal, and a proposal can be handed to the
+> engine, which applies it only if it is legal in the game. **Not built yet:** the safety validator,
+> anything in the app that calls the Game Master, realtime multiplayer, persistence, and a game UI.
+> See
 > [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---

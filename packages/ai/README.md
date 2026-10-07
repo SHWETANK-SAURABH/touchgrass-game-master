@@ -71,7 +71,22 @@ the runtime is still selected by `MODEL_PROVIDER`, `MODEL_NAME` and `MODEL_BASE_
 `npm run ai:live` runs `game-master.live.ts`, a manual test that makes a real call to the configured
 model. It is not part of `npm test`.
 
+## The hand-off
+
+`@touchgrass/ai/handoff` — the only module in this package that passes anything to the game engine.
+
+```ts
+import { runGameMasterTurn } from '@touchgrass/ai/handoff';
+
+const result = await runGameMasterTurn({ gameMaster, state, ctx });
+// ok:  { outcome: 'APPLIED' | 'NO_EVENT', state, proposal }
+// err: { stage: 'PROPOSAL' | 'SCHEMA' | 'STATE' | 'APPLICATION', ... }
+```
+
+It owns no game rules. A proposal is checked by the engine's `validateExternalEvent` and applied by
+the engine's `applyValidatedEvent`. Schema-valid does not mean game-valid: a proposal that names a
+player, role or power that does not exist is refused, and the state is returned unchanged.
+
 ## Not implemented yet
 
-Safety validation of a proposal, passing a proposal to the game engine, and anything that decides
-when to ask the Game Master.
+Safety validation of a proposal, and anything that decides when to ask the Game Master.

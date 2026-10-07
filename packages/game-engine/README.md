@@ -12,22 +12,23 @@ Tag and Hide & Seek are fully playable through the engine with no AI.
 
 ## Modules
 
-| Module              | Contains                                                                   |
-| ------------------- | -------------------------------------------------------------------------- |
-| `state.ts`          | `GameState`, `PlayerState`, history, timer, the lifecycle transition table |
-| `actions.ts`        | `PlayerAction` union and `parsePlayerAction`                               |
-| `events.ts`         | `GameEvent` union (thirteen kinds) and `parseGameEvent`                    |
-| `modifiers.ts`      | `ActiveModifier` and `ActiveObjective`                                     |
-| `validate.ts`       | `validatePlayerAction`, `validateGameEvent` — checks only, no state change |
-| `process-action.ts` | Valid action → the events it causes; readiness and game start              |
-| `apply-event.ts`    | Event application: where scores, roles in play and status change           |
-| `scoring.ts`        | Points that follow from an event, from the game definition                 |
-| `win-conditions.ts` | `evaluateWinners`                                                          |
-| `time.ts`           | `advanceTime`: round expiry, next round, game end, expiry of modifiers     |
-| `reduce.ts`         | Host commands: create, join, leave, phase, pause, resume, abort            |
-| `engine.ts`         | `step`, `replay`, `submitGameEvent`, `contextAt`                           |
-| `roles.ts`          | Seeded role assignment at start                                            |
-| `errors.ts`         | `EngineError` and its codes                                                |
+| Module               | Contains                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `state.ts`           | `GameState`, `PlayerState`, history, timer, the lifecycle transition table            |
+| `actions.ts`         | `PlayerAction` union and `parsePlayerAction`                                          |
+| `events.ts`          | `GameEvent` union (thirteen kinds) and `parseGameEvent`                               |
+| `modifiers.ts`       | `ActiveModifier` and `ActiveObjective`                                                |
+| `validate.ts`        | `validatePlayerAction`, `validateGameEvent` — checks only, no state change            |
+| `process-action.ts`  | Valid action → the events it causes; readiness and game start                         |
+| `apply-event.ts`     | Event application: where scores, roles in play and status change                      |
+| `scoring.ts`         | Points that follow from an event, from the game definition                            |
+| `win-conditions.ts`  | `evaluateWinners`                                                                     |
+| `time.ts`            | `advanceTime`: round expiry, next round, game end, expiry of modifiers                |
+| `reduce.ts`          | Host commands: create, join, leave, phase, pause, resume, abort                       |
+| `engine.ts`          | `step`, `replay`, `submitGameEvent`, `contextAt`                                      |
+| `external-events.ts` | `validateExternalEvent`, `applyValidatedEvent`: the trust boundary for outside events |
+| `roles.ts`           | Seeded role assignment at start                                                       |
+| `errors.ts`          | `EngineError` and its codes                                                           |
 
 ## Using it
 

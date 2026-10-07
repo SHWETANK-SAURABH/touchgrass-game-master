@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./game-master": "./src/game-master/index.ts"
+    "./game-master": "./src/game-master/index.ts",
+    "./handoff": "./src/handoff/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

@@ -7,6 +7,9 @@ import {
   LIFECYCLE_EVENT_KINDS,
   getGameDefinition,
 } from '@touchgrass/game-definitions';
+import { contextAt } from '@touchgrass/game-engine';
+import { fixedClock } from '@touchgrass/shared';
+import { runGameMasterTurn } from '../handoff/handoff';
 import { ModelProviderError } from '../provider/errors';
 import { createModelProviderFromEnv } from '../provider/registry';
 import type { ModelProvider } from '../provider/types';
@@ -272,5 +275,57 @@ describe(`live boundary: what real ${env.MODEL_NAME} can get past the schema`, (
     );
     expect(raw).not.toContain('"score"');
     expect(raw).not.toContain('"awards"');
+  });
+});
+
+/**
+ * The full Phase 3B path with the real model: a real proposal is validated
+ * against the game by the engine and, only if accepted, applied by the engine.
+ * A refusal by the engine is a correct outcome here, not a test failure; what is
+ * asserted is that a refusal leaves the game exactly as it was.
+ */
+describe(`live hand-off: real ${env.MODEL_NAME} proposal → engine validation → engine`, () => {
+  it.each([
+    ['tag / running round', contextFor('tag')],
+    ['tag / busy moment', busyTagContext()],
+    ['tag / with recent history', historyTagContext()],
+    ['hide-and-seek / with recent history', historyHideAndSeekContext()],
+  ] as const)('%s', async (label, context) => {
+    const before = structuredClone(context.state);
+    const result = await runGameMasterTurn({
+      gameMaster: createGameMaster({ provider: createModelProviderFromEnv(env) }),
+      state: context.state,
+      ctx: contextAt(fixedClock(context.now)),
+    });
+
+    console.log(
+      `
+=== hand-off: ${label} ===
+${JSON.stringify(
+  result.ok
+    ? {
+        outcome: result.value.outcome,
+        proposal: result.value.proposal,
+        historyEntriesAdded: result.value.state.history.length - before.history.length,
+      }
+    : { outcome: 'REFUSED', failure: result.error },
+  null,
+  2,
+)}`,
+    );
+
+    // The state that was passed in is never changed, whatever happened.
+    expect(context.state).toEqual(before);
+    if (!result.ok) {
+      // A model that could not be reached is a real failure of this test.
+      expect(result.error.stage, JSON.stringify(result.error)).not.toBe('PROPOSAL');
+      return;
+    }
+    if (result.value.outcome === 'NO_EVENT') {
+      expect(result.value.state).toBe(context.state);
+    } else {
+      expect(result.value.state.history.length).toBe(before.history.length + 1);
+      expect(result.value.state.history.at(-1)?.source).toBe('game-master');
+    }
   });
 });

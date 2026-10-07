@@ -17,7 +17,7 @@ flowchart TD
     AV --> AP["Action processing<br/>eventsForAction"]
     AP --> GE["GameEvent(s)"]
 
-    EX["External event<br/>host now, Game Master in Phase 3"] --> EV["submitGameEvent<br/>optional kinds only"]
+    EX["External event<br/>host, or a Game Master proposal"] --> EV["validateExternalEvent<br/>→ ValidatedGameEvent<br/>→ applyValidatedEvent"]
     EV --> GE
 
     T["Time<br/>advanceTime"] --> GE
@@ -33,17 +33,18 @@ flowchart TD
     VE -. refused .-> X
 ```
 
-| Step              | Module              | What it does                                                                              |
-| ----------------- | ------------------- | ----------------------------------------------------------------------------------------- |
-| Action validation | `validate.ts`       | Is this action allowed for this player, in this game, right now?                          |
-| Action processing | `process-action.ts` | Turns a valid action into the events the game's rules say it causes                       |
-| Event validation  | `validate.ts`       | Is this event legal here? Applied to every event, whatever its origin                     |
-| Event application | `apply-event.ts`    | Applies a validated event: the only place scores, roles in play, and player status change |
-| Scoring           | `scoring.ts`        | Points that follow from the event, taken from the game definition                         |
-| Win evaluation    | `win-conditions.ts` | Decides the winners when the game ends                                                    |
-| Time              | `time.ts`           | Ends rounds and the game when the supplied time says they are due                         |
-| Host commands     | `reduce.ts`         | Join, leave, pause, resume, abort                                                         |
-| Entry points      | `engine.ts`         | `step`, `replay`, `submitGameEvent`, `contextAt`                                          |
+| Step              | Module               | What it does                                                                              |
+| ----------------- | -------------------- | ----------------------------------------------------------------------------------------- |
+| Action validation | `validate.ts`        | Is this action allowed for this player, in this game, right now?                          |
+| Action processing | `process-action.ts`  | Turns a valid action into the events the game's rules say it causes                       |
+| Event validation  | `validate.ts`        | Is this event legal here? Applied to every event, whatever its origin                     |
+| Event application | `apply-event.ts`     | Applies a validated event: the only place scores, roles in play, and player status change |
+| Scoring           | `scoring.ts`         | Points that follow from the event, taken from the game definition                         |
+| Win evaluation    | `win-conditions.ts`  | Decides the winners when the game ends                                                    |
+| Time              | `time.ts`            | Ends rounds and the game when the supplied time says they are due                         |
+| Host commands     | `reduce.ts`          | Join, leave, pause, resume, abort                                                         |
+| External events   | `external-events.ts` | `validateExternalEvent`, `applyValidatedEvent`: the trust boundary for outside events     |
+| Entry points      | `engine.ts`          | `step`, `replay`, `submitGameEvent`, `contextAt`                                          |
 
 **An action is intent; an event is a fact.** No action schema has a score, role, or status field,
 and every schema is strict, so a client has nowhere to put a state change.
@@ -196,10 +197,37 @@ the report is one the rules allow from that player at that moment.
 
 There is no event that sets a score or writes arbitrary state.
 
-**What an external source may send.** `submitGameEvent` accepts only the seven "External" kinds, and
-only those the game definition lists. It refuses lifecycle and derived kinds, and it refuses a
-`ROLE_CHANGE` that carries a `cause` — otherwise an outside event could claim to be a tag and collect
-its points.
+**What an external source may send.** Only the seven "External" kinds, and only those the game
+definition lists. Lifecycle and derived kinds are refused, and so is a `ROLE_CHANGE` that carries a
+`cause` — otherwise an outside event could claim to be a tag and collect its points.
+
+**The trust boundary for external events** (`external-events.ts`). Schema-valid does not mean
+game-valid: a well-formed event can name a player who is not in the game. So an outside event
+reaches the reducer in two steps, and cannot skip the first:
+
+```ts
+validateExternalEvent(state, input, source, ctx): Result<ValidatedGameEvent, EngineError>
+applyValidatedEvent(state, validated, ctx): Result<GameState, EngineError>
+```
+
+- `validateExternalEvent` takes untrusted input. It checks the schema, refuses engine-only kinds and
+  causes, brings the game up to `ctx.now`, and then runs the same `validateGameEvent` rules used for
+  every event: the players, roles and powers named must exist, a player must not already hold the
+  power, role limits must hold, the modifier must be allowed, and a round must be running. It
+  changes nothing.
+- The game definition is always the registered one for the state's game id. A caller cannot pass
+  its own, so a modified copy of a definition cannot widen what is accepted.
+- A `ValidatedGameEvent` can only come from that function. It is bound to the state it was checked
+  against. `applyValidatedEvent` refuses a look-alike object or a copy, an event validated for
+  another game, one validated on a different branch of the same game, and one validated before the
+  game moved on (including into the next round). A state reloaded from storage counts as a different
+  state: validate again after loading.
+- "Validated" means legal in the game. It does not mean safe; the engine has no safety check.
+- `applyValidatedEvent` then applies it, validating once more as every application does.
+- Nothing is repaired: an unknown player, role or power is a refusal, and the state is untouched.
+
+`submitGameEvent` is those two calls in a row, for callers that do not need to see the validated
+event.
 
 **What each event does when applied:**
 
@@ -345,8 +373,9 @@ untouched.
 A model's output varies between runs, cannot be relied on to respect limits, and cannot be audited
 after the fact. So no model writes to `GameState`, and the engine is built so that it could not:
 
-- The only way in for a model is `submitGameEvent`, which takes untrusted input and validates it
-  against the event schema and then against the game.
+- The only way in for a model is the external-event boundary: `validateExternalEvent` takes
+  untrusted input and checks it against the event schema and then against the game, and only the
+  `ValidatedGameEvent` it issues can be applied.
 - It can send only the seven external event kinds, and only those the game supports.
 - It cannot send a lifecycle event, so it cannot start or end a round or the game.
 - It cannot send a derived event or a caused `ROLE_CHANGE`, so it cannot fake a tag, a find, or a
@@ -355,7 +384,8 @@ after the fact. So no model writes to `GameState`, and the engine is built so th
 - Every applied event is recorded in history with its source, so "did a model cause this?" can be
   answered from the data.
 
-No AI is involved in Phase 2; the Game Master arrives in Phase 3 and uses this same entry point.
+The engine itself involves no AI. The Game Master's proposals reach it through this boundary, from
+the hand-off module in `packages/ai` (see [AI.md](../../AI.md)).
 
 ---
 

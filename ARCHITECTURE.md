@@ -78,7 +78,7 @@ whether that proposal becomes an event.
 ```mermaid
 flowchart TD
     State["Game state<br/>(session + definition + log)"] --> Agent
-    Agent["Game Master agent<br/>proposes only (Phase 3A)"] --> Model
+    Agent["Game Master agent<br/>proposes only"] --> Model
     Model["Gemma via ModelProvider<br/>grammar-constrained decoding"] --> Raw
 
     Raw["Raw JSON completion"] --> Zod
@@ -109,8 +109,9 @@ Three properties hold at every arrow:
 
 ## 4. Agent architecture
 
-> **Status (Phase 3A):** the Game Master exists and returns proposals. Nothing sends a proposal to
-> the engine yet, and there is no safety validator. See [AI.md](./AI.md).
+> **Status (Phase 3B):** the Game Master returns proposals, and a proposal can be handed to the
+> engine, which validates it against the game before applying it. There is no safety validator, and
+> nothing in the app calls the Game Master during a game. See [AI.md](./AI.md).
 
 An "agent" in this project is narrow and deliberately unglamorous: a component that observes game
 state, decides whether to act, and emits a structured proposal into a validation pipeline. It has no
@@ -142,8 +143,15 @@ What is in place:
 - **The model** is Gemma on a local Ollama by default, reached through the existing `ModelProvider`
   and a small adapter that presents it to Mastra.
 
-What is not: any code that calls the Game Master during a game, the safety validator, and the
-hand-off of a proposal to `submitGameEvent`.
+- **The hand-off** (`packages/ai/src/handoff/`) — passes a proposal to the engine's
+  `validateExternalEvent` and, only if the engine accepts it, to `applyValidatedEvent`. It holds no
+  game rules. Schema-valid does not mean game-valid: the engine refuses proposals that name players,
+  roles or powers that do not exist.
+
+**AI proposes; deterministic validation decides; the game engine executes.**
+
+What is not in place: any code that calls the Game Master during a game, and the safety validator.
+Until the safety validator exists, an applied proposal has been checked for legality only.
 
 ### Why one agent, not several
 
@@ -168,12 +176,12 @@ Tag and Hide & Seek are fully playable through it with no AI.
 
 **Four inputs, each a pure function of (state, input, supplied time):**
 
-| Input          | Entry point           | Notes                                                         |
-| -------------- | --------------------- | ------------------------------------------------------------- |
-| Host command   | `reduce`              | Join, leave, pause, resume, abort                             |
-| Player action  | `processPlayerAction` | A report of intent; turned into events by the game's rules    |
-| External event | `submitGameEvent`     | Host today, Game Master in Phase 3; optional event kinds only |
-| Time           | `advanceTime`         | Ends rounds and the game when they are due                    |
+| Input          | Entry point                                     | Notes                                                                                         |
+| -------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Host command   | `reduce`                                        | Join, leave, pause, resume, abort                                                             |
+| Player action  | `processPlayerAction`                           | A report of intent; turned into events by the game's rules                                    |
+| External event | `validateExternalEvent` → `applyValidatedEvent` | Host or Game Master proposal; optional kinds only; must be validated before it can be applied |
+| Time           | `advanceTime`                                   | Ends rounds and the game when they are due                                                    |
 
 **It is pure.** No `Date.now()`, no `Math.random()`, no timers, no I/O, no import from
 `packages/ai`. The clock value arrives in `EngineContext`; role assignment uses a seeded RNG stored
@@ -497,12 +505,12 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                       | Status       |
-| ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
-| Phase 3 | Game Master. 3A (local Gemma + Mastra, returns proposals) is done; safety and engine hand-off are next      | In progress  |
-| Later   | Safety validator, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment — not scheduled    | Planned      |
+| Phase   | Scope                                                                                                                  | Status       |
+| ------- | ---------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                           | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable            | **Complete** |
+| Phase 3 | Game Master. 3A (local Gemma + Mastra, returns proposals) and 3B (state-aware validation and engine hand-off) are done | In progress  |
+| Later   | Safety validator, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment — not scheduled               | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

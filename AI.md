@@ -1,24 +1,31 @@
 # AI Architecture
 
-> **Status: Phase 3A — local Game Master.** A Game Master exists: one Mastra agent, running Gemma
-> through a local Ollama, that reads a game and returns a structured proposal. **That is where it
-> stops.** Nothing in the codebase sends a proposal to the game engine, and there is no safety
-> validator. The normal tests use a scripted stand-in for the model. The separate manual live test
-> (`npm run ai:live`) has passed against the real local `gemma3:4b` model: 16/16 checks, with
-> default settings in the final run. Every structured proposal was schema-valid, no forbidden or
-> engine-only event kind was produced, and the repair loop was not needed.
+> **Status: Phase 3B — validated hand-off.** A Game Master exists: one Mastra agent, running Gemma
+> through a local Ollama, that reads a game and returns a structured proposal. A proposal can now be
+> handed to the game engine, which checks it against the current game and applies it only if it is
+> legal. **There is still no safety validator**, and nothing in the app calls the Game Master during
+> a game. The normal tests use a scripted stand-in for the model. The separate manual live test
+> (`npm run ai:live`) has passed against the real local `gemma3:4b` model.
+
+**AI proposes; deterministic validation decides; the game engine executes.**
+
+**Schema-valid does not mean game-valid.** In the Phase 3A live run, real Gemma output that passed
+the schema named players (`"123"`), roles (`"merchant"`) and powers (`"speedBoost"`) that did not
+exist, and offered a shield to a player who already held one. The schema cannot know any of that;
+only the engine, looking at the game, can.
 
 ---
 
 ## Who does what
 
-| Role                 | What it is                                                                       | State                                             |
-| -------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Claude / Codex       | Development assistants used to write this code. Not part of the running product. | —                                                 |
-| **Gemma**            | The runtime model, served locally by Ollama                                      | Integrated                                        |
-| **Game Master**      | **Proposes** at most one game event, with a reason                               | Implemented (Phase 3A)                            |
-| **Safety validator** | **Validates** a proposal against the hazard taxonomy                             | Not implemented                                   |
-| **Game engine**      | **Executes** validated events, deterministically                                 | Implemented; not yet connected to the Game Master |
+| Role                 | What it is                                                                       | State           |
+| -------------------- | -------------------------------------------------------------------------------- | --------------- |
+| Claude / Codex       | Development assistants used to write this code. Not part of the running product. | —               |
+| **Gemma**            | The runtime model, served locally by Ollama                                      | Integrated      |
+| **Game Master**      | **Proposes** at most one game event, with a reason                               | Implemented     |
+| **Hand-off**         | Passes a proposal to the engine's validator, then to the engine                  | Implemented     |
+| **Game engine**      | **Decides** whether the event is legal now, and **executes** it                  | Implemented     |
+| **Safety validator** | **Validates** a proposal against the hazard taxonomy                             | Not implemented |
 
 ---
 
@@ -27,26 +34,27 @@
 ```
 GameState + GameDefinition
     ↓
-Game Master (Mastra agent)     ← implemented
+Game Master (Mastra agent)       packages/ai/src/game-master
     ↓
-Gemma via Ollama               ← implemented: ModelProvider + adapter
+Gemma via Ollama                 ModelProvider + adapter
     ↓
-structured proposal            ← implemented: { rationale, event | null }
+raw proposal                     { rationale, event | null }
     ↓
-schema validation              ← implemented: the engine's external-event schemas
+schema validation                parseGameMasterProposal: shape, and the kinds this game allows
     ↓
-returned to the caller         ← Phase 3A ends here
-    ·
-    ·   not built:
+state-aware validation           validateExternalEvent (engine): is it legal in this game, now?
     ↓
-Safety validation              ← planned (taxonomy and contracts exist)
+ValidatedGameEvent               can only be issued by the engine
     ↓
-Game engine (submitGameEvent)  ← exists, but nothing passes a proposal to it yet
+deterministic application        applyValidatedEvent (engine)
+    ↓
+new GameState
+
+not built:  Safety validation, which belongs between schema validation and the engine.
 ```
 
-Every arrow narrows what is possible. A proposal has been constrained by a grammar and parsed by a
-schema before it is returned; it has **not** been judged safe, and it has **not** been checked
-against the current state of the game. Those are the next two steps and neither exists yet.
+Every arrow narrows what is possible. Nothing in this pipeline has judged a proposal **safe**: that
+step does not exist yet, so an applied event has been checked for legality, not for hazards.
 
 ---
 
@@ -138,6 +146,46 @@ falls back to another model.
 module imports types and schemas from the engine and none of its entry points; a test reads the
 source files and fails if that changes. Its only output is a returned value. A test passes it a
 deeply frozen game and checks it is unchanged.
+
+### The hand-off, as built
+
+`@touchgrass/ai/handoff` (`packages/ai/src/handoff/handoff.ts`) is the only place in this package
+that passes anything to the engine. It is a separate module from the Game Master, and it contains no
+game rules.
+
+| Function                     | What it does                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| `validateGameMasterProposal` | Schema check, then the engine's state-aware check. Changes nothing.          |
+| `handOffProposal`            | Validates, then has the engine apply the validated event. No model involved. |
+| `runGameMasterTurn`          | Asks the Game Master for a proposal, then calls `handOffProposal`.           |
+
+- **Raw proposal.** Treated as untrusted even when it came from `GameMaster.propose`; its shape is
+  checked again.
+- **Schema validation.** Rejects malformed proposals, engine-only event kinds, a `ROLE_CHANGE` with a
+  `cause`, and kinds the game does not allow. Failure stage: `SCHEMA`.
+- **State-aware validation.** Done by the engine (`validateExternalEvent`), with the same rules it
+  applies to every event: the players, roles and powers named must exist; a player must not already
+  hold the power; role limits must hold; the modifier must be allowed; a round must be running.
+  Failure stage: `STATE`, carrying the engine's error.
+- **Validated event.** A `ValidatedGameEvent` is issued only by the engine and is bound to the state
+  it was checked against. An object that merely has the same shape is refused, and so is one
+  validated on a different branch of the game or before the game moved on. "Validated" means legal
+  in the game, not safe.
+- **Game definition.** Never taken from the caller: the hand-off and the engine both look it up from
+  the state's game id, so a modified definition cannot widen what is accepted.
+- **Deterministic application.** `applyValidatedEvent` applies it. The engine validates again as it
+  applies, as it does for every event. Failure stage: `APPLICATION`.
+- **Null proposal.** `event: null` is a legitimate answer. The outcome is `NO_EVENT`, the same state
+  object is returned, and nothing is recorded. The rationale is explanatory text from a model; it is
+  kept for the record and never read as a fact about the game. (A real reply paired `event: null`
+  with a rationale that was untrue.)
+- **Failure.** A typed error, and the caller's state exactly as it was. Nothing is partly applied.
+  Nothing is repaired or guessed: an unknown player is not mapped to a real one, a missing role or
+  power is not created, and the model is not asked again after a state rejection.
+
+In a live run of this path, real Gemma proposals produced each outcome: one applied
+(`TIME_EXTENSION`), one refused by the engine (a shield for a player who already held one), and two
+no-ops.
 
 ### Where Mastra fits
 
@@ -415,15 +463,14 @@ collecting.
 
 ## 8. What comes next
 
-Not built, in the order the pipeline needs them:
+Not built:
 
-| Piece                                   | Notes                                                               |
-| --------------------------------------- | ------------------------------------------------------------------- |
-| Safety validation of a proposal         | Specified in [SAFETY.md](./SAFETY.md); taxonomy and contracts exist |
-| Passing a proposal to the engine        | Through `submitGameEvent`, which validates it against the game      |
-| When to ask the Game Master             | Nothing calls `propose` yet; there is no trigger or schedule        |
-| Limits on how often events are proposed | The engine accepts any number of valid external events              |
-| Prompt evaluation                       | Recorded real outputs, asserted against the schemas                 |
+| Piece                                   | Notes                                                                                                                                                      |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Safety validation of a proposal         | Specified in [SAFETY.md](./SAFETY.md); taxonomy and contracts exist. Until it exists, the hand-off applies events that have been checked for legality only |
+| When to ask the Game Master             | Nothing calls `runGameMasterTurn` yet; there is no trigger or schedule                                                                                     |
+| Limits on how often events are proposed | The engine accepts any number of valid external events                                                                                                     |
+| Prompt evaluation                       | Recorded real outputs, asserted against the schemas                                                                                                        |
 
 `generateStructured()` in `structured.ts` predates the Game Master. It is still tested and exported,
 but the Game Master does not use it; it has its own repair loop around the Mastra agent.
