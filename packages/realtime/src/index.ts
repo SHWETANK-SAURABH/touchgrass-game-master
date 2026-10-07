@@ -3,7 +3,13 @@ export {
   TRANSPORT_ERROR_CODES,
   type TransportErrorCode,
   joinMessageSchema,
+  resumeMessageSchema,
   actionMessageSchema,
+  leaveMessageSchema,
+  hostAuthMessageSchema,
+  hostCommandSchema,
+  type HostCommand,
+  hostCommandMessageSchema,
   clientMessageSchema,
   type ClientMessage,
   serverMessageSchema,
@@ -12,6 +18,8 @@ export {
   encodeServerMessage,
 } from './protocol';
 
-export { type Room, type RoomConnection, type RoomOptions, createRoom } from './room';
+export { type Room, type RoomConnection, type RoomOptions, createRoom, createToken } from './room';
+
+export { type HostedGame, type HostedGameOptions, createHostedGame } from './hosted-game';
 
 export { type RealtimeServer, type RealtimeServerOptions, createRealtimeServer } from './ws-server';

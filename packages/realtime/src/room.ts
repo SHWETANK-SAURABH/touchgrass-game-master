@@ -1,7 +1,9 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { type Result, createPlayerId as mintPlayerId } from '@touchgrass/shared';
 import type { EngineContext, EngineError, GameState, HistoryEntry } from '@touchgrass/game-engine';
 import type { GameSession, SessionUpdate } from '@touchgrass/game-session';
 import {
+  type HostCommand,
   MAX_MESSAGE_BYTES,
   type ServerMessage,
   type TransportErrorCode,
@@ -15,25 +17,31 @@ import {
  *
  *   incoming frame
  *     → envelope validation              protocol.ts
- *     → which player is this connection? the room's own table
+ *     → who is this connection?          the room's own tables
  *     → GameSession                      the one authoritative state
- *     → update to every joined connection, or a refusal to the sender
+ *     → update to everyone in the room, or a refusal to the sender
  *
  * A room is given exactly one GameSession when it is made and never looks one
  * up. Nothing a client sends selects a game.
  *
- * Identity. A connection has no identity until it joins. On a join the room
- * makes up a new player id itself, asks the session to add that player, and
- * only if that succeeds records "this connection is that player". Every later
- * action from the connection is submitted as that player. A client never sends
- * a player id, and a message that contains one is not a valid envelope.
+ * Three kinds of caller reach a room, and they are kept apart:
  *
- * That is not authentication. A connection is not a user: anyone who has the
- * join code can join, and nothing proves who they are. The id only means "the
- * same connection that joined".
+ *   a player        a connection bound to a player id. It may act, and leave.
+ *   the host        the one connection that presented the host token. It may
+ *                   send four commands: pause, resume, abort, remove a player.
+ *   server code     whatever holds this object. It may call `tick`.
  *
- * The table of connections lives here, in the room, and nowhere in GameState.
- * The game does not know sockets exist.
+ * Capabilities. The room hands out two kinds of random secret:
+ *
+ *   a player token  made at a join, sent once to the joiner. A later connection
+ *                   that presents it becomes that same player.
+ *   the host token  made when the game is created and given to its creator.
+ *
+ * They are bearer capabilities, not authentication. Whoever holds a player
+ * token is that player; whoever holds the host token is the host. Nothing
+ * proves who a person is. The tokens, and the tables of which connection is
+ * whom, live here in memory. They are never part of GameState, never sent in an
+ * update, and gone when the process stops.
  *
  * Everything is synchronous. A frame is handled, the session is called, and the
  * resulting messages are handed to the connections before `receive` returns, so
@@ -60,69 +68,157 @@ export interface Room {
   readonly receive: (connection: RoomConnection, raw: unknown, ctx: EngineContext) => void;
 
   /**
-   * Forgets a connection. The player it was stays in the game: no command is
-   * issued, and nothing can act as that player afterwards.
+   * Forgets a connection: who it was, and that it was the host if it was. The
+   * player stays in the game and their token stays valid, so they can resume.
+   * The game is not paused or stopped, and nobody is told.
    */
   readonly disconnect: (connection: RoomConnection) => void;
 
   /**
-   * Brings the game up to `ctx.now` and, if that changed it, tells every joined
-   * connection. Trusted callers only: it is not reachable from a client message.
+   * Brings the game up to `ctx.now` and, if that changed it, tells everyone in
+   * the room. Trusted callers only: it is not reachable from a client message.
    * Nothing calls it automatically.
    */
   readonly tick: (ctx: EngineContext) => Result<SessionUpdate, EngineError>;
 
-  /** The player a connection joined as, if it has. */
+  /** The player a connection currently is, if any. */
   readonly playerIdOf: (connection: RoomConnection) => string | undefined;
 
-  /** How many connections are currently joined. */
+  /** Whether a connection is currently the host. */
+  readonly isHost: (connection: RoomConnection) => boolean;
+
+  /** How many connections are currently bound to a player. */
   readonly connectionCount: () => number;
 }
 
 export interface RoomOptions {
   /** The one game this room is for. */
   readonly session: GameSession;
+  /**
+   * The secret that makes a connection the host. A room made without one has no
+   * host: no connection can send host commands.
+   */
+  readonly hostToken?: string;
   /** Makes a new player id for a join. Defaults to a random one. */
   readonly createPlayerId?: () => string;
+  /** Makes a new player token. Defaults to 32 random bytes. */
+  readonly createToken?: () => string;
   readonly maxMessageBytes?: number;
 }
 
+/** A new unguessable token: 32 random bytes, 43 characters. */
+export function createToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+function sameSecret(presented: string, expected: string): boolean {
+  const a = Buffer.from(presented, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function createRoom(options: RoomOptions): Room {
-  const { session } = options;
+  const { session, hostToken } = options;
   const createPlayerId = options.createPlayerId ?? mintPlayerId;
+  const mintToken = options.createToken ?? createToken;
   const maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
 
-  /** Which player each joined connection is. Insertion order is join order. */
-  const players = new Map<RoomConnection, string>();
+  /** Which player each bound connection is. */
+  const playerOf = new Map<RoomConnection, string>();
+  /** The one connection each player has, if they have one. */
+  const connectionOf = new Map<string, RoomConnection>();
+  /** Which player each outstanding player token is for. */
+  const playerForToken = new Map<string, string>();
+  /** The connection that presented the host token, if one has. */
+  let hostConnection: RoomConnection | undefined;
 
-  const send = (connection: RoomConnection, message: ServerMessage): void => {
+  const write = (connection: RoomConnection, text: string): void => {
     try {
-      connection.send(encodeServerMessage(message));
+      connection.send(text);
     } catch {
       // A connection that cannot be written to is going away. Its own close
       // will remove it; one failed send must not stop the others.
     }
   };
 
+  const send = (connection: RoomConnection, message: ServerMessage): void => {
+    write(connection, encodeServerMessage(message));
+  };
+
   const fail = (connection: RoomConnection, code: TransportErrorCode): void => {
     send(connection, { type: 'error', code });
   };
 
-  /** Sends the authoritative result of a change to every joined connection. */
+  /** A player who has left has no token and no connection bound to them. */
+  const retire = (playerId: string): void => {
+    for (const [token, owner] of playerForToken) {
+      if (owner === playerId) playerForToken.delete(token);
+    }
+    const connection = connectionOf.get(playerId);
+    if (connection) {
+      playerOf.delete(connection);
+      connectionOf.delete(playerId);
+    }
+  };
+
+  /**
+   * Brings the room's tables into line with the game.
+   *
+   * The session can be changed by trusted server code that does not go through
+   * this room, for example by removing a player directly. The room is not told.
+   * So whenever it is about to act for a connection or deliver an update, it
+   * checks its tables against the authoritative state: a player who is no
+   * longer in the game, or has left, loses their token and their binding.
+   *
+   * It runs only at those two moments. Nothing watches the session.
+   */
+  const reconcile = (state: GameState): void => {
+    const present = new Set(
+      state.players.filter((player) => player.status !== 'left').map((player) => player.id),
+    );
+    const known = new Set([...connectionOf.keys(), ...playerForToken.values()]);
+    for (const playerId of known) {
+      if (!present.has(playerId)) retire(playerId);
+    }
+  };
+
+  /**
+   * Sends the authoritative result of a change to every bound connection and to
+   * the host. The message is built from the session's result and nothing else.
+   *
+   * The tables are reconciled against the state being sent first, so a
+   * connection whose player has gone is not told. `departing` is the one
+   * exception: the connection of a player this room has just removed, which is
+   * sent this last update about its own removal.
+   */
   const broadcast = (
     state: GameState,
     entries: readonly HistoryEntry[],
-    except?: RoomConnection,
+    options: { except?: RoomConnection; departing?: RoomConnection | undefined } = {},
   ): void => {
+    reconcile(state);
     const text = encodeServerMessage({ type: 'update', entries: [...entries], state });
-    for (const connection of players.keys()) {
-      if (connection === except) continue;
-      try {
-        connection.send(text);
-      } catch {
-        // As above.
-      }
+    const recipients = new Set(playerOf.keys());
+    if (hostConnection) recipients.add(hostConnection);
+    if (options.departing) recipients.add(options.departing);
+    for (const connection of recipients) {
+      if (connection !== options.except) write(connection, text);
     }
+  };
+
+  const bind = (connection: RoomConnection, playerId: string): void => {
+    playerOf.set(connection, playerId);
+    connectionOf.set(playerId, connection);
+  };
+
+  /** Everything `disconnect` does. Tokens are untouched. */
+  const forget = (connection: RoomConnection): void => {
+    const playerId = playerOf.get(connection);
+    if (playerId !== undefined && connectionOf.get(playerId) === connection) {
+      connectionOf.delete(playerId);
+    }
+    playerOf.delete(connection);
+    if (hostConnection === connection) hostConnection = undefined;
   };
 
   const join = (
@@ -130,13 +226,13 @@ export function createRoom(options: RoomOptions): Room {
     message: { joinCode: string; displayName: string },
     ctx: EngineContext,
   ): void => {
-    if (players.has(connection)) return fail(connection, 'ALREADY_JOINED');
+    if (playerOf.has(connection)) return fail(connection, 'ALREADY_JOINED');
     if (message.joinCode !== session.getState().joinCode) {
       return fail(connection, 'WRONG_JOIN_CODE');
     }
 
     // The id is made here. Adding a player is a host command; this is the one
-    // use of it a client can cause, and only for itself.
+    // use of it a player can cause, and only for itself.
     const playerId = createPlayerId();
     const added = session.applyCommand(
       { type: 'ADD_PLAYER', playerId, displayName: message.displayName },
@@ -144,13 +240,38 @@ export function createRoom(options: RoomOptions): Room {
     );
     if (!added.ok) return send(connection, rejection(added.error));
 
-    players.set(connection, playerId);
-    send(connection, { type: 'joined', playerId, state: added.value.state });
-    broadcast(added.value.state, added.value.entries, connection);
+    const token = mintToken();
+    playerForToken.set(token, playerId);
+    bind(connection, playerId);
+    // The only time the token is ever sent, and only to the connection it is for.
+    send(connection, { type: 'joined', playerId, token, state: added.value.state });
+    broadcast(added.value.state, added.value.entries, { except: connection });
+  };
+
+  const resume = (connection: RoomConnection, token: string): void => {
+    if (playerOf.has(connection)) return fail(connection, 'ALREADY_JOINED');
+
+    const playerId = playerForToken.get(token);
+    const state = session.getState();
+    const player = state.players.find((candidate) => candidate.id === playerId);
+    if (playerId === undefined || !player || player.status === 'left') {
+      return fail(connection, 'INVALID_TOKEN');
+    }
+
+    // One connection per player. The earlier one is forgotten before the new one
+    // is bound, so there is no moment at which both can act.
+    const previous = connectionOf.get(playerId);
+    if (previous) {
+      forget(previous);
+      previous.close();
+    }
+    bind(connection, playerId);
+    // No token in this reply, and nobody else is told: the game did not change.
+    send(connection, { type: 'joined', playerId, state });
   };
 
   const act = (connection: RoomConnection, intent: unknown, ctx: EngineContext): void => {
-    const playerId = players.get(connection);
+    const playerId = playerOf.get(connection);
     if (playerId === undefined) return fail(connection, 'NOT_JOINED');
 
     const outcome = session.submitAction(playerId, intent, ctx);
@@ -158,21 +279,72 @@ export function createRoom(options: RoomOptions): Room {
     broadcast(outcome.value.state, outcome.value.entries);
   };
 
+  const leave = (connection: RoomConnection, ctx: EngineContext): void => {
+    const playerId = playerOf.get(connection);
+    if (playerId === undefined) return fail(connection, 'NOT_JOINED');
+    // A transport rule, not an engine one. The engine can remove a player at any
+    // time, but a game that loses its tagger or seeker mid-round is not handled,
+    // so a player may only take themselves out before it starts.
+    if (session.getState().status !== 'lobby') return fail(connection, 'CANNOT_LEAVE');
+
+    const removed = session.applyCommand({ type: 'REMOVE_PLAYER', playerId }, ctx);
+    if (!removed.ok) return send(connection, rejection(removed.error));
+
+    // Forgotten at once, and told along with everyone else.
+    retire(playerId);
+    broadcast(removed.value.state, removed.value.entries, { departing: connection });
+  };
+
+  const authoriseHost = (connection: RoomConnection, token: string): void => {
+    if (hostToken === undefined || !sameSecret(token, hostToken)) {
+      return fail(connection, 'INVALID_TOKEN');
+    }
+    // The host role is not handed over silently. While one connection holds it,
+    // another with the same token is refused.
+    if (hostConnection && hostConnection !== connection) {
+      return fail(connection, 'HOST_ALREADY_CONNECTED');
+    }
+    hostConnection = connection;
+    send(connection, { type: 'host_authorized', state: session.getState() });
+  };
+
+  const command = (connection: RoomConnection, input: HostCommand, ctx: EngineContext): void => {
+    if (hostConnection !== connection) return fail(connection, 'NOT_HOST');
+
+    const applied = session.applyCommand(input, ctx);
+    if (!applied.ok) return send(connection, rejection(applied.error));
+
+    // A removed player stops being a connection of this room at once and can no
+    // longer resume. Their connection is told with everyone else.
+    const departing = input.type === 'REMOVE_PLAYER' ? connectionOf.get(input.playerId) : undefined;
+    if (input.type === 'REMOVE_PLAYER') retire(input.playerId);
+    broadcast(applied.value.state, applied.value.entries, { departing });
+  };
+
   return {
     receive(connection, raw, ctx) {
       const message = parseClientMessage(raw, maxMessageBytes);
       if (!message.ok) return fail(connection, message.error);
+      // Before deciding who this connection is, drop any binding or token whose
+      // player the game no longer has.
+      reconcile(session.getState());
       switch (message.value.type) {
         case 'join':
           return join(connection, message.value, ctx);
+        case 'resume':
+          return resume(connection, message.value.token);
         case 'action':
           return act(connection, message.value.intent, ctx);
+        case 'leave':
+          return leave(connection, ctx);
+        case 'host_auth':
+          return authoriseHost(connection, message.value.token);
+        case 'host_command':
+          return command(connection, message.value.command, ctx);
       }
     },
 
-    disconnect(connection) {
-      players.delete(connection);
-    },
+    disconnect: forget,
 
     tick(ctx) {
       const before = session.getState();
@@ -183,8 +355,10 @@ export function createRoom(options: RoomOptions): Room {
       return update;
     },
 
-    playerIdOf: (connection) => players.get(connection),
+    playerIdOf: (connection) => playerOf.get(connection),
 
-    connectionCount: () => players.size,
+    isHost: (connection) => hostConnection === connection,
+
+    connectionCount: () => playerOf.size,
   };
 }

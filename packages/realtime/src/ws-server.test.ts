@@ -6,6 +6,7 @@ import { WebSocket } from 'ws';
 import type { Clock } from '@touchgrass/shared';
 import { contextAt } from '@touchgrass/game-engine';
 import { type GameSession, createGameSession } from '@touchgrass/game-session';
+import { type HostedGame, createHostedGame } from './hosted-game';
 import { MAX_MESSAGE_BYTES, type ServerMessage, serverMessageSchema } from './protocol';
 import { type RealtimeServer, createRealtimeServer } from './ws-server';
 
@@ -368,5 +369,154 @@ describe('the adapter is thin', () => {
     for (const file of ['room.ts', 'protocol.ts', 'index.ts']) {
       expect(readFileSync(join(directory, file), 'utf-8')).not.toMatch(/from 'ws'/);
     }
+  });
+});
+
+describe('lifecycle and control over real sockets', () => {
+  async function hosted(): Promise<{
+    server: RealtimeServer;
+    game: HostedGame;
+    clock: ReturnType<typeof testClock>;
+  }> {
+    const clock = testClock();
+    const created = createHostedGame(
+      { type: 'CREATE_SESSION', sessionId: 'g1', gameId: 'tag', joinCode: CODE, randomSeed: 7 },
+      contextAt(clock),
+    );
+    if (!created.ok) throw new Error('fixture failed');
+    const server = await createRealtimeServer({ room: created.value.room, port: 0, clock });
+    servers.push(server);
+    return { server, game: created.value, clock };
+  }
+
+  async function joinWithToken(
+    client: Client,
+    name: string,
+  ): Promise<{ playerId: string; token: string }> {
+    client.send({ type: 'join', joinCode: CODE, displayName: name });
+    const reply = await client.next();
+    if (reply.type !== 'joined' || reply.token === undefined) throw new Error('join failed');
+    return { playerId: reply.playerId, token: reply.token };
+  }
+
+  it('resumes a dropped player on a new socket and closes the old one', async () => {
+    const { server, game } = await hosted();
+    const first = await Client.open(server.port);
+    const { playerId, token } = await joinWithToken(first, 'Ada');
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    // A second socket presents the token while the first is still open.
+    const second = await Client.open(server.port);
+    second.send({ type: 'resume', token });
+    const reply = await second.next();
+    expect(reply).toMatchObject({ type: 'joined', playerId });
+    expect(reply.type === 'joined' && reply.token).toBeUndefined();
+
+    // The server closed the first socket.
+    expect(await first.closed).toBeGreaterThan(0);
+    expect(game.session.getState().players).toHaveLength(1);
+    expect(server.room.connectionCount()).toBe(1);
+
+    // The new socket acts as the same player.
+    second.send({ type: 'action', intent: { type: 'PLAYER_READY' } });
+    const update = await second.next();
+    expect(update.type === 'update' && update.state.players[0]).toMatchObject({
+      id: playerId,
+      ready: true,
+    });
+  });
+
+  it('resumes after a real disconnect, with the token still valid', async () => {
+    const { server, game } = await hosted();
+    const first = await Client.open(server.port);
+    const { playerId, token } = await joinWithToken(first, 'Ada');
+    first.socket.close();
+    await first.closed;
+
+    const second = await Client.open(server.port);
+    await settled(second);
+    expect(server.room.connectionCount()).toBe(0);
+    expect(game.session.getState().players[0]?.status).toBe('active');
+
+    second.send({ type: 'resume', token });
+    expect(await second.next()).toMatchObject({ type: 'joined', playerId });
+  });
+
+  it('lets the holder of the host token stop the game, and nobody else', async () => {
+    const { server, game } = await hosted();
+    const [player, host, other] = [
+      await Client.open(server.port),
+      await Client.open(server.port),
+      await Client.open(server.port),
+    ];
+    const { token } = await joinWithToken(player, 'Ada');
+
+    // A player cannot, even presenting their own token as the host token.
+    player.send({ type: 'host_command', command: { type: 'ABORT_SESSION', reason: 'no' } });
+    expect(await player.next()).toEqual({ type: 'error', code: 'NOT_HOST' });
+    player.send({ type: 'host_auth', token });
+    expect(await player.next()).toEqual({ type: 'error', code: 'INVALID_TOKEN' });
+
+    host.send({ type: 'host_auth', token: game.hostToken });
+    expect((await host.next()).type).toBe('host_authorized');
+
+    // A second connection with the same token is refused while the host is connected.
+    other.send({ type: 'host_auth', token: game.hostToken });
+    expect(await other.next()).toEqual({ type: 'error', code: 'HOST_ALREADY_CONNECTED' });
+
+    host.send({ type: 'host_command', command: { type: 'ABORT_SESSION', reason: 'thunder' } });
+    for (const client of [player, host]) {
+      const update = await client.next();
+      expect(update.type === 'update' && update.state.status).toBe('aborted');
+    }
+    expect(game.session.getState().status).toBe('aborted');
+    expect(other.pending()).toBe(0);
+  });
+
+  it('lets the host come back after its socket drops, without stopping the game', async () => {
+    const { server, game } = await hosted();
+    const host = await Client.open(server.port);
+    host.send({ type: 'host_auth', token: game.hostToken });
+    await host.next();
+    host.socket.close();
+    await host.closed;
+
+    const again = await Client.open(server.port);
+    await settled(again);
+    expect(game.session.getState().status).toBe('lobby');
+    again.send({ type: 'host_auth', token: game.hostToken });
+    expect((await again.next()).type).toBe('host_authorized');
+  });
+
+  it('never puts the host token on the wire', async () => {
+    const { server, game } = await hosted();
+    const frames: string[] = [];
+    const socket = new WebSocket(`ws://127.0.0.1:${server.port}`);
+    await new Promise((resolve) => socket.once('open', resolve));
+    socket.on('message', (data: Buffer) => frames.push(data.toString('utf8')));
+    socket.send(JSON.stringify({ type: 'host_auth', token: game.hostToken }));
+    socket.send(JSON.stringify({ type: 'join', joinCode: CODE, displayName: 'Ada' }));
+    socket.send(
+      JSON.stringify({ type: 'host_command', command: { type: 'ABORT_SESSION', reason: 'x' } }),
+    );
+    socket.send('?');
+    await new Promise<void>((resolve) => {
+      socket.on('message', (data: Buffer) => {
+        if (data.toString('utf8').includes('BAD_MESSAGE')) resolve();
+      });
+    });
+    expect(frames.length).toBeGreaterThanOrEqual(4);
+    expect(frames.join('')).not.toContain(game.hostToken);
+    socket.close();
+  });
+
+  it('needs exactly one of a room or a session', async () => {
+    const clock = testClock();
+    const session = newSession(clock);
+    await expect(createRealtimeServer({ port: 0, clock })).rejects.toThrow(/exactly one/);
+    const { game } = await hosted();
+    await expect(
+      createRealtimeServer({ room: game.room, session, port: 0, clock }),
+    ).rejects.toThrow(/exactly one/);
   });
 });

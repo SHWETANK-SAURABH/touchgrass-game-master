@@ -10,17 +10,28 @@ import { type Room, type RoomConnection, createRoom } from './room';
  *
  * It turns sockets into the room's connections and frames into calls to the
  * room, and does nothing else. It holds no game logic and no table of games:
- * a server is built around the one GameSession it is given, and every socket
- * that connects is a connection to that game's room. There is no path, query
- * or message by which a client could choose a different one.
+ * a server is built around the one room (or the one GameSession) it is given,
+ * and every socket that connects is a connection to that game's room. There is
+ * no path, query or message by which a client could choose a different one.
+ *
+ * The socket is plain `ws`. Nothing here encrypts it, so a token sent over it
+ * can be read by anyone on the network path.
  *
  * This is where the time comes from. Each frame is stamped with the injected
  * clock as it arrives; the room, the session and the engine never read one.
  */
 
 export interface RealtimeServerOptions {
-  /** The one game this server is for. */
-  readonly session: GameSession;
+  /**
+   * The one room this server is for, as made by `createHostedGame`. Give this
+   * or `session`, not both.
+   */
+  readonly room?: Room;
+  /**
+   * The one game this server is for. A room is made around it with no host
+   * token, so no connection can send host commands.
+   */
+  readonly session?: GameSession;
   /** The port to listen on. 0 picks a free one. */
   readonly port: number;
   /** Where the time comes from. Defaults to the system clock. */
@@ -54,11 +65,18 @@ function textOf(data: RawData, isBinary: boolean): string | null {
 export function createRealtimeServer(options: RealtimeServerOptions): Promise<RealtimeServer> {
   const clock = options.clock ?? systemClock;
   const maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
-  const room = createRoom({
-    session: options.session,
-    maxMessageBytes,
-    ...(options.createPlayerId ? { createPlayerId: options.createPlayerId } : {}),
-  });
+  const given = options.room;
+  const session = options.session;
+  if ((given === undefined) === (session === undefined)) {
+    return Promise.reject(new Error('createRealtimeServer needs exactly one of room or session.'));
+  }
+  const room =
+    given ??
+    createRoom({
+      session: session as GameSession,
+      maxMessageBytes,
+      ...(options.createPlayerId ? { createPlayerId: options.createPlayerId } : {}),
+    });
 
   return new Promise((resolve, reject) => {
     const server = new WebSocketServer({

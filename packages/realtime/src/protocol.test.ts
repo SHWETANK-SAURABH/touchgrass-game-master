@@ -40,9 +40,16 @@ describe('client envelopes', () => {
     }
   });
 
-  it('has exactly two envelopes', () => {
+  it('has exactly six envelopes', () => {
     const types = clientMessageSchema.options.map((option) => option.shape.type.value);
-    expect(types.sort()).toEqual(['action', 'join']);
+    expect(types.sort()).toEqual([
+      'action',
+      'host_auth',
+      'host_command',
+      'join',
+      'leave',
+      'resume',
+    ]);
   });
 
   it.each([

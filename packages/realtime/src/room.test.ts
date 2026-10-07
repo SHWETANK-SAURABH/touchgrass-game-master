@@ -602,16 +602,23 @@ describe('the room is synchronous and keeps transport out of the game', () => {
   it('reaches the game only through the session', () => {
     const code = strip('room.ts');
     expect(code).not.toMatch(
-      /submitPlayerAction|processPlayerAction|submitGameEvent|\breduce\(|createSession\(|REMOVE_PLAYER|ABORT_SESSION|PAUSE_SESSION/,
+      /submitPlayerAction|processPlayerAction|submitGameEvent|\breduce\(|createSession\(/,
     );
-    expect([...code.matchAll(/session\.(\w+)\(/g)].map((match) => match[1]).sort()).toEqual([
+    const calls = [...code.matchAll(/session\.(\w+)\(/g)].map((match) => match[1]);
+    expect([...new Set(calls)].sort()).toEqual([
       'advanceTime',
       'applyCommand',
       'getState',
-      'getState',
       'submitAction',
     ]);
-    expect(code.match(/type: '([A-Z_]+)'/g)).toEqual(["type: 'ADD_PLAYER'"]);
+    // The only commands the room writes itself: a join and a leave, each for the
+    // connection's own player. Host commands arrive already checked against the
+    // allow-list in protocol.ts and are passed through.
+    expect(code.match(/type: '([A-Z_]+)'/g)).toEqual([
+      "type: 'ADD_PLAYER'",
+      "type: 'REMOVE_PLAYER'",
+    ]);
+    expect(code).not.toMatch(/ABORT_SESSION|PAUSE_SESSION|RESUME_SESSION|ADVANCE_PHASE/);
   });
 
   it('puts nothing about connections into the game state', () => {

@@ -185,6 +185,14 @@ lobby, and `PAUSE_SESSION` from any running state. **Stopping a game is never bl
 check.** This is already implemented and tested: if someone is hurt, the host presses stop and the
 engine complies, no matter what else is true.
 
+How a person reaches it: the realtime transport (`@touchgrass/realtime`) lets the connection that
+holds a game's host token send `PAUSE_SESSION`, `RESUME_SESSION`, `ABORT_SESSION` and
+`REMOVE_PLAYER`. That is a capability, not an identity. Whoever has the token can stop the game, and
+a host who has lost it, or whose device is off, cannot. The token is not encrypted in transit and
+does not survive a restart. Players cannot stop a game through the transport; they can only stop
+playing. There is no in-app button yet, because there is no client. So this layer is implemented in
+the engine and reachable over the wire, and it still depends on a person holding the token.
+
 ---
 
 ## Policy derivation

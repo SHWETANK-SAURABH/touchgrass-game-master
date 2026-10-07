@@ -257,6 +257,7 @@ order give the same roles on any host.
 | Multiplayer command boundary                      | Phase 5A: `submitPlayerAction`, actor supplied by the caller     |
 | In-memory authoritative session holder            | Phase 5B: `@touchgrass/game-session`, one object per game        |
 | WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
+| Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Session registry, authentication, persistence     | Later                                                            |
 
 ---
@@ -315,10 +316,12 @@ not a guarantee. [SAFETY.md](./SAFETY.md) lists what it cannot do.
 
 ## 7. Realtime architecture
 
-> **Status (Phase 5C).** Three layers exist: the engine's command boundary (5A), an in-memory
-> holder of one game's state (5B), and a WebSocket transport around one such holder (5C). The
-> transport is for development: one game per server, no authentication, no reconnection, no
-> automatic time, and no production deployment. Redis, persistence and a browser client do not exist.
+> **Status (Phase 5D).** Four layers exist: the engine's command boundary (5A), an in-memory
+> holder of one game's state (5B), a WebSocket transport around one such holder (5C), and
+> lifecycle and control on that transport (5D): resume, leave, and a host role. The transport is for
+> development: one game per server, bearer tokens instead of authentication, an unencrypted socket,
+> no automatic time, and no production deployment. Redis, persistence and a browser client do not
+> exist.
 
 The function at the bottom, which everything above it calls:
 
@@ -383,7 +386,7 @@ host command (trusted caller)   →     applyCommand    →   reduce
 It is in memory only. A process restart loses every game; there is no persistence, no restore from a
 saved state, no duplicate-message detection, and no connection to the Game Master.
 
-### The WebSocket transport (Phase 5C)
+### The WebSocket transport (Phases 5C and 5D)
 
 `@touchgrass/realtime` puts sockets around one `GameSession`.
 
@@ -405,51 +408,123 @@ authoritative state + history entries
 | `room.ts`      | Ties connections to one session; joins, actions, broadcast, `tick`. No sockets |
 | `ws-server.ts` | Thin `ws` adapter: sockets to connections, frames to room calls, the clock     |
 
-A client may send exactly two messages, and neither has a field for a player id, a session id, a
-state or a message id:
+A client may send six messages. None has a field for a player id, a session id, a state or a
+message id, and all are strict:
 
 ```ts
 {
   type: ('join', joinCode, displayName);
-}
+} // become a new player
+{
+  type: ('resume', token);
+} // become the player a token is for
 {
   type: ('action', intent);
-}
+} // act as the player this connection is
+{
+  type: 'leave';
+} // leave, before the game starts
+{
+  type: ('host_auth', token);
+} // become the host of this game
+{
+  type: ('host_command', command);
+} // one of four commands, as the host
 ```
 
-The server sends `joined`, `update`, `rejected` (the game refused) and `error` (the transport
-refused: `BAD_MESSAGE`, `NOT_JOINED`, `ALREADY_JOINED`, `WRONG_JOIN_CODE`).
+The server sends `joined`, `host_authorized`, `update`, `rejected` (the game refused) and `error`
+(the transport refused: `BAD_MESSAGE`, `NOT_JOINED`, `ALREADY_JOINED`, `WRONG_JOIN_CODE`,
+`INVALID_TOKEN`, `NOT_HOST`, `HOST_ALREADY_CONNECTED`, `CANNOT_LEAVE`).
 
-- **One session per server.** `createRealtimeServer({ session, port, clock })` is built around the
-  one `GameSession` it is given. There is no session registry and no lookup: nothing in a URL or a
-  message selects a game, and the join code is checked against that one game.
-- **Identity is minted by the server and is not authentication.** On a join the room creates a new
-  player id, asks the session to add that player, and only then records that the connection is that
-  player. Later actions use that id. A client never sends one. This means "the same connection that
-  joined" and nothing more: a connection is not a user, anyone with the join code can join, and
-  nothing proves who they are.
-- **Joining is the one host command a client can cause,** for itself only. Pause, resume, abort,
-  removal and phase changes are not reachable from any message.
-- **Envelope and intent are validated separately.** The transport checks the envelope and passes
+**Three kinds of caller, kept apart.**
+
+| Caller      | How it is recognised                             | What it may do                                      |
+| ----------- | ------------------------------------------------ | --------------------------------------------------- |
+| Player      | A connection bound to a player id by join/resume | Send intents as that player; leave in the lobby     |
+| Host        | The one connection that presented the host token | Pause, resume, abort, remove a player. Nothing else |
+| Server code | Holds the room object in process                 | `tick`, and anything else the session's API allows  |
+
+A player's message cannot become a host command, a host command cannot name anything outside its
+allow-list, and neither can reach `tick`.
+
+**One session per server.**
+
+- `createHostedGame(command, ctx)` makes the session, the room and a host token together and returns
+  them to its caller. `createRealtimeServer({ room, port, clock })` serves that one room.
+- There is no session registry and no lookup: nothing in a URL or a message selects a game, and the
+  join code is checked against that one game. Whoever holds the returned object holds the game.
+
+**Capabilities, not authentication.** The room issues two kinds of random secret (32 bytes each):
+
+- A **player token**, made at a join and sent once, to the joiner, in `joined`. Presenting it later
+  in `resume` binds that connection to the same player.
+- The **host token**, made when the game is created and given to its creator. Presenting it in
+  `host_auth` makes that connection the host.
+
+They are bearer capabilities. Whoever has a player token is that player, and whoever has the host
+token is the host; nothing proves who a person is. They live only in the room's memory: never in
+`GameState`, never in an `update`, never in a log (the development entry point prints the host token
+once, deliberately). A token from one game means nothing in another. They are lost on restart. The
+socket is plain `ws`, so a token can be read by anyone on the network path; that is acceptable for
+local development and not for anything else.
+
+**Joining.**
+
+- On a join the room creates a new player id, asks the session to add that player, and only then
+  binds the connection and issues the token. A client never sends a player id.
+- Joining is the one host command a player can cause, for itself only, and only in the lobby.
+
+**Disconnect and resume.**
+
+- A disconnect forgets the connection and nothing else. The player stays in the game, the token
+  stays valid, the game is not paused, and nobody is told. The engine has no "disconnected" status
+  and none was added.
+- A resume binds a new connection to the existing player. No player is created and nothing is
+  broadcast, because the game did not change.
+- A player has at most one connection. A resume closes the earlier connection before binding the
+  new one, and the earlier one can no longer act or hear.
+- A player who has left cannot resume.
+
+**Leaving is lobby-only.** `leave` issues `REMOVE_PLAYER` for the sender, invalidates their token
+and frees their place. After the game starts it is refused with `CANNOT_LEAVE`. That is a rule of
+the transport, not the engine: the engine can remove a player at any time, but a game that loses its
+only tagger or seeker mid-round is not handled, so a player may not take themselves out then. A host
+may still remove one.
+
+**The host.**
+
+- One connection at a time. While a host is connected, a second connection with the same token is
+  refused; the role is not transferred silently.
+- A host that disconnects loses only the role. The game continues, and the token works again.
+- Host commands are an explicit allow-list checked in the protocol with the engine's own schemas:
+  `PAUSE_SESSION`, `RESUME_SESSION`, `ABORT_SESSION`, `REMOVE_PLAYER`. `ADD_PLAYER`,
+  `ADVANCE_PHASE` and everything else `reduce` accepts are not expressible.
+- A removed player's token is invalidated and their connection stops being part of the room.
+- The host is not a player unless the same connection also joins, and receives updates either way.
+
+**Messages.**
+
+- Envelope and intent are validated separately. The transport checks the envelope and passes
   `intent` on untouched; the engine validates it as a player intent.
-- **Broadcast is the session's result.** After an accepted change every joined connection is sent
-  the added history entries and the full authoritative state. Nothing a client sent is echoed. A
-  refusal goes to the sender only, and a connection that has not joined is sent nothing.
-- **The full state is broadcast.** Every joined client receives the whole `GameState`, including
-  the join code and the random seed. There are no per-player views and no patches.
-- **Order.** The room is synchronous: a frame is handled and its messages are written before the
-  next frame is read, so updates go out in history order.
-- **A disconnect removes the connection, not the player.** No `REMOVE_PLAYER` is issued. The player
-  stays in the game, nobody can act as them, and a new connection cannot become them. Leaving and
-  reconnecting are not designed.
-- **No automatic tick.** `room.tick(ctx)` is a trusted server-side call that advances time and
-  broadcasts if the game changed. Nothing calls it on a timer, so a game moves forward in time only
-  when a message is accepted or something calls `tick`.
-- **The clock is injected at the edge.** The adapter stamps each frame from a `Clock`. The room, the
-  session and the engine read none.
+- After an accepted change every bound connection and the host are sent the added history entries
+  and the full authoritative state. Nothing a client sent is echoed. A refusal goes to the sender
+  only, and a connection that is neither a player nor the host is sent nothing.
+- The full state is broadcast, including the join code and the random seed. There are no per-player
+  views and no patches.
+- The room is synchronous: a frame is handled and its messages are written before the next frame is
+  read, so updates go out in history order.
 
-Not handled: authentication, reconnection, leave, duplicate messages, rate limiting, slow clients,
-and display names (free text shown to other players, not safety-checked).
+**Time.**
+
+- `room.tick(ctx)` is a trusted server-side call that advances time and broadcasts if the game
+  changed. Nothing calls it on a timer, so a game moves forward in time only when a message is
+  accepted or something calls `tick`.
+- The adapter stamps each frame from an injected `Clock`. The room, the session and the engine read
+  none.
+
+Not handled: authentication, encryption, origin checks, duplicate messages, rate limiting
+(including on guesses at a join code or token), slow clients, a tagger or seeker who is removed
+mid-game, and display names (free text shown to other players, not safety-checked).
 
 **Deployment is deferred.** Next.js route handlers cannot accept a WebSocket upgrade and the
 standalone server offers no hook for one, so the realtime server needs its own process or a custom
@@ -687,7 +762,8 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                 | **Complete** |
 | 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                  | **Complete** |
 | 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
-| Later   | Session registry, authentication, reconnection, Redis, Game Master during a game, persistence, deployment   | Planned      |
+| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
+| Later   | Session registry, authentication and TLS, Redis, Game Master during a game, persistence, deployment         | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

@@ -38,10 +38,16 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 > around one such session: connections join with a join code, are given a player id by the server,
 > send intents, and receive the authoritative state after each accepted change.
 >
-> The transport is a development-stage boundary, not a multiplayer product. One server holds one
-> game; there is no session registry, no authentication, no reconnection, and nothing advances time
-> automatically. **Not built yet:** a browser client or game UI, production deployment of the
-> realtime server, anything that calls the Game Master during a game, and persistence. See
+> Phase 5D adds lifecycle and control to that transport. A player who drops can resume on a new
+> connection with a token the server gave them at join; a player can leave before the game starts;
+> and whoever holds the game's host token can pause, resume or stop it and remove a player.
+>
+> The transport is a development-stage boundary, not a multiplayer product. The tokens are bearer
+> capabilities, not authentication: whoever has one can use it, they travel over an unencrypted
+> socket, and they are lost when the process stops. One server holds one game; there is no session
+> registry, and nothing advances time automatically. **Not built yet:** a browser client or game UI,
+> real authentication and encryption, production deployment of the realtime server, anything that
+> calls the Game Master during a game, and persistence. See
 > [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---
@@ -92,20 +98,20 @@ Already running Ollama on the host? Skip `ai:up` / `ai:pull` and just
 
 ### Scripts
 
-| Command                 | What it does                                              |
-| ----------------------- | --------------------------------------------------------- |
-| `npm run dev`           | Next.js dev server                                        |
-| `npm run build`         | Production build (standalone output)                      |
-| `npm run verify`        | Format check → lint → typecheck → tests. The CI gate.     |
-| `npm test`              | Vitest, whole workspace                                   |
-| `npm run typecheck`     | `tsc --noEmit` in every workspace                         |
-| `npm run lint`          | ESLint with type-aware rules                              |
-| `npm run format`        | Prettier, write mode                                      |
-| `npm run ai:up / :down` | Start / stop the local model runtime                      |
-| `npm run ai:pull`       | Pull `MODEL_NAME` into the runtime                        |
-| `npm run ai:logs`       | Tail the model runtime logs                               |
-| `npm run ai:live`       | Manual test: one real Game Master call to the local model |
-| `npm run realtime:dev`  | Development only: a WebSocket server around one new game  |
+| Command                 | What it does                                                |
+| ----------------------- | ----------------------------------------------------------- |
+| `npm run dev`           | Next.js dev server                                          |
+| `npm run build`         | Production build (standalone output)                        |
+| `npm run verify`        | Format check → lint → typecheck → tests. The CI gate.       |
+| `npm test`              | Vitest, whole workspace                                     |
+| `npm run typecheck`     | `tsc --noEmit` in every workspace                           |
+| `npm run lint`          | ESLint with type-aware rules                                |
+| `npm run format`        | Prettier, write mode                                        |
+| `npm run ai:up / :down` | Start / stop the local model runtime                        |
+| `npm run ai:pull`       | Pull `MODEL_NAME` into the runtime                          |
+| `npm run ai:logs`       | Tail the model runtime logs                                 |
+| `npm run ai:live`       | Manual test: one real Game Master call to the local model   |
+| `npm run realtime:dev`  | Development only: one game over WebSocket; prints its codes |
 
 GPU on the host? `docker compose --profile gpu up -d ollama-gpu`.
 
