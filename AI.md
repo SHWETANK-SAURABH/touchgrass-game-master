@@ -15,13 +15,13 @@ Game Master Agent          ← planned, Phase 3
     ↓
 Gemma (open weights)       ← implemented: ModelProvider port + two adapters
     ↓
-Structured GameEvent       ← implemented: gameEventProposalSchema
+Structured GameEvent       ← implemented: gameEventSchema
     ↓
 Zod validation             ← implemented: generateStructured() + repair loop
     ↓
 Safety validation          ← planned, later phase (taxonomy + contracts implemented)
     ↓
-Game Engine                ← lifecycle implemented; full engine is Phase 2
+Game Engine                ← implemented: deterministic, no AI (Phase 2)
 ```
 
 Every arrow narrows what is possible. By the time anything reaches the engine it has been constrained
@@ -151,27 +151,31 @@ schema catches that, so the output is re-validated after generation — always, 
 
 ### The contract itself
 
-`packages/game-engine/src/proposal.ts` is the narrow waist of the product. Seven event kinds, a strict
-discriminated union, and a set of deliberately conservative choices:
+`packages/game-engine/src/events.ts` is the narrow waist of the product. A strict discriminated
+union — of which an outside source such as the Game Master may send seven kinds, through
+`submitGameEvent` — and a set of deliberately conservative choices:
 
-| Choice                               | Reason                                                                           |
-| ------------------------------------ | -------------------------------------------------------------------------------- |
-| No free-form `data` bag              | Every field is named and typed. A model cannot invent a new effect.              |
-| `.strict()` on every branch          | An unexpected key is a rejection, not a shrug.                                   |
-| Length-bounded strings (4–240)       | A twist must be shoutable across a field and remembered.                         |
-| Bounded durations (5–300s)           | A model cannot impose a rule lasting an hour.                                    |
-| Bounded score deltas (±10)           | A model cannot hand out a thousand points.                                       |
-| `rationale` is **required**          | Every proposal is auditable, including the rejected ones.                        |
-| Max 3 proposals per turn             | Players cannot hold five simultaneous rule changes in their heads while running. |
-| Landmarks as text, never coordinates | The system has no map and must not claim spatial authority it lacks.             |
+| Choice                           | Reason                                                               |
+| -------------------------------- | -------------------------------------------------------------------- |
+| No free-form `data` bag          | Every field is named and typed. A model cannot invent a new effect.  |
+| `.strict()` on every branch      | An unexpected key is a rejection, not a shrug.                       |
+| Length-bounded strings (3–240)   | A twist must be shoutable across a field and remembered.             |
+| Bounded durations (5–600s)       | A model cannot impose a rule lasting an hour.                        |
+| Bounded points (1–10)            | A model cannot hand out a thousand points, or take any away.         |
+| Zones as text, never coordinates | The system has no map and must not claim spatial authority it lacks. |
 
-The last one is worth dwelling on. `ZONE_RULE` takes `landmark: "the bench with the missing slat"` —
+The last one is worth dwelling on. `ZONE_CHANGE` takes `zone: "the bench with the missing slat"` —
 never a latitude. The system does not know what is on the far side of a hedge, so it never pretends
 to. Players own the boundary; the Game Master only references what they already named.
 
+The event schema is the engine's contract, not an AI-specific one: it has no field for a model's
+reasoning and no notion of a "turn". Whether the Game Master's output also carries a rationale for
+the audit log, and how many events one turn may contain, are Phase 3 decisions that wrap this
+schema without changing it.
+
 ### Why a discriminated union rather than a loose object
 
-Error quality. Telling a 4B model _"modifier.durationSeconds: Too big: expected number to be <=300"_
+Error quality. Telling a 4B model _"durationSeconds: Too big: expected number to be <=600"_
 produces a usable retry. Telling it _"invalid union"_ does not. The union's per-branch errors are what
 make the repair loop in the next section actually work.
 
@@ -330,7 +334,7 @@ collecting.
 | Golden-prompt regression tests   | real Gemma output, pinned, asserted against schemas |
 
 Mastra is **not installed yet**, deliberately. It arrives with the agent that uses it; the seam it
-plugs into — `gameMasterTurnSchema` and `generateStructured()` — already exists and is covered by tests.
+plugs into — `gameEventSchema` and `generateStructured()` — already exists and is covered by tests.
 
 The deterministic safety validator is specified in [SAFETY.md](./SAFETY.md) and is not part of
 Phase 3.

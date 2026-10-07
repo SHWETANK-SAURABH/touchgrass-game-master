@@ -1,45 +1,24 @@
 import { z } from 'zod';
+import {
+  MODIFIERS_BY_EVENT,
+  gameModifierKindSchema,
+  optionalEventKindSchema,
+  playerActionKindSchema,
+} from './vocabulary';
 
 /**
  * Game definitions are *data*, not code.
  *
  * A definition declares everything the rest of the system needs to know about a
  * game: how many bodies it needs, what roles exist, which phases it moves
- * through, which kinds of event the Game Master may propose, and which physical
- * risks are inherent to it. The engine reads it to validate commands, the safety
- * layer reads it to pick a policy, and the agent reads it to build a prompt.
+ * through, which events, modifiers and player actions it supports, how it is
+ * scored and won, and which physical risks are inherent to it. The engine reads
+ * it to validate actions and events, the safety layer reads it to pick a policy,
+ * and the agent reads it to build a prompt.
  *
  * Because it is data, adding a sixth game is a pull request against one file —
  * which is exactly the contribution shape Hacktoberfest rewards.
  */
-
-/**
- * The closed set of event kinds a Game Master may propose.
- *
- * This enum is the narrow waist of the whole product. The model cannot invent a
- * new kind of effect on the world; it can only fill in one of these shapes, and
- * each shape gets a deterministic handler in the engine. An unrecognised kind is
- * a validation failure, not a feature.
- */
-export const GAME_EVENT_KINDS = [
-  /** Narration or a briefing read aloud. Changes no rules. */
-  'ANNOUNCE',
-  /** A new objective players must complete, e.g. "find three different leaf shapes". */
-  'OBJECTIVE',
-  /** A rule twist applied to some or all players, e.g. "taggers may only side-step". */
-  'MODIFIER',
-  /** A spatial rule expressed in human landmarks, e.g. "the big oak is now safe". */
-  'ZONE_RULE',
-  /** Starts, extends or ends a countdown. */
-  'TIMER',
-  /** Awards or removes points. */
-  'SCORE_ADJUST',
-  /** Moves players between the roles the definition declares. */
-  'ROLE_ASSIGN',
-] as const;
-
-export const gameEventKindSchema = z.enum(GAME_EVENT_KINDS);
-export type GameEventKind = z.infer<typeof gameEventKindSchema>;
 
 /** How much ground the game needs. Feeds both matchmaking copy and safety policy. */
 export const spaceRequirementSchema = z.enum([
@@ -136,6 +115,84 @@ export const gameMasterGuidanceSchema = z.object({
 });
 export type GameMasterGuidance = z.infer<typeof gameMasterGuidanceSchema>;
 
+/**
+ * A rule the engine enforces when a player reports an action against another
+ * player. It names who may do it, to whom, and what happens — as data the engine
+ * interprets, never as prose. How the outcome is applied is engine work.
+ */
+export const gameRuleSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/, 'rule ids are lower-kebab-case'),
+    description: z.string().min(1),
+    /** The reported action this rule governs. */
+    action: z.enum(['PLAYER_TAGGED', 'PLAYER_FOUND']),
+    /** Role the reporting player must hold. */
+    actorRoleId: z.string().min(1),
+    /** Role the other player must hold. */
+    targetRoleId: z.string().min(1),
+    /** SWAP_ROLES: the two players exchange roles. TARGET_OUT: the target is out for the round. */
+    outcome: z.enum(['SWAP_ROLES', 'TARGET_OUT']),
+  })
+  .strict();
+export type GameRule = z.infer<typeof gameRuleSchema>;
+
+/** A power a POWER_UP event can grant. Its effect is one the engine implements. */
+export const gamePowerSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/, 'power ids are lower-kebab-case'),
+    label: z.string().min(1),
+    description: z.string().min(1),
+    /** TAG_IMMUNITY: while active, the holder cannot be tagged. */
+    effect: z.enum(['TAG_IMMUNITY']),
+    /** How long the power lasts once activated. */
+    durationSeconds: z.int().min(5).max(600),
+  })
+  .strict();
+export type GamePower = z.infer<typeof gamePowerSchema>;
+
+/** The moments at which the engine awards points. */
+export const SCORING_TRIGGERS = [
+  /** The reporting player made a valid tag. */
+  'TAG_MADE',
+  /** A player ended the round without being tagged or found. */
+  'ROUND_SURVIVED',
+  /** The reporting player found another player. */
+  'FOUND_PLAYER',
+  /** A hiding player was still hidden when the round ended. */
+  'STAYED_HIDDEN',
+  /** The seeker found every hider before the round ended. */
+  'ALL_FOUND',
+] as const;
+export const scoringTriggerSchema = z.enum(SCORING_TRIGGERS);
+export type ScoringTrigger = z.infer<typeof scoringTriggerSchema>;
+
+/** Points for one trigger. A game's scoring is the list of these; nothing else awards points. */
+export const scoringRuleSchema = z
+  .object({
+    trigger: scoringTriggerSchema,
+    points: z.int().min(1).max(100),
+  })
+  .strict();
+export type ScoringRule = z.infer<typeof scoringRuleSchema>;
+
+/** How a winner is chosen. The engine evaluates these; no model is asked who won. */
+export const WIN_CONDITION_TYPES = ['HIGHEST_SCORE'] as const;
+export const winConditionSchema = z
+  .object({
+    type: z.enum(WIN_CONDITION_TYPES),
+  })
+  .strict();
+export type WinCondition = z.infer<typeof winConditionSchema>;
+
+/** The settings a game runs with. A definition supplies the values a new game starts from. */
+export const gameSettingsSchema = z
+  .object({
+    totalRounds: z.int().min(1).max(10),
+    roundDurationSeconds: z.int().min(30).max(3600),
+  })
+  .strict();
+export type GameSettings = z.infer<typeof gameSettingsSchema>;
+
 const INTENSITY_RANK: Record<Intensity, number> = { low: 1, moderate: 2, high: 3 };
 
 export const gameDefinitionSchema = z
@@ -154,8 +211,24 @@ export const gameDefinitionSchema = z
     equipment: z.array(z.string().min(1)),
     roles: z.array(gameRoleSchema).min(1),
     phases: z.array(gamePhaseSchema).min(1),
-    /** Subset of GAME_EVENT_KINDS the Game Master may propose in this game. */
-    allowedEventKinds: z.array(gameEventKindSchema).min(1),
+    /**
+     * Optional events this game supports. Lifecycle events (ROUND_START, ROUND_END,
+     * GAME_END) are always supported and are not listed.
+     */
+    allowedEventKinds: z.array(optionalEventKindSchema).min(1),
+    /** Modifiers this game supports. Must match the events above. */
+    allowedModifiers: z.array(gameModifierKindSchema),
+    /** Actions players may report in this game. */
+    allowedActionKinds: z.array(playerActionKindSchema).min(1),
+    /** What happens when one player reports an action against another. */
+    rules: z.array(gameRuleSchema),
+    /** Powers a POWER_UP event can grant. Empty unless POWER_UP is allowed. */
+    powers: z.array(gamePowerSchema),
+    scoring: z.array(scoringRuleSchema),
+    /** In priority order: later entries break ties left by earlier ones. */
+    winConditions: z.array(winConditionSchema).min(1),
+    /** Settings a new game of this definition starts with. */
+    settings: gameSettingsSchema,
     /** Thematic directions for generated twists, e.g. "weather", "wildlife". */
     modifierThemes: z.array(z.string().min(1)).min(1),
     safety: gameSafetyProfileSchema,
@@ -218,12 +291,133 @@ export const gameDefinitionSchema = z
       });
     }
 
-    // A ROLE_ASSIGN event is meaningless in a game with a single role.
-    if (kinds.includes('ROLE_ASSIGN') && definition.roles.length < 2) {
+    // A ROLE_CHANGE event is meaningless in a game with a single role.
+    if (kinds.includes('ROLE_CHANGE') && definition.roles.length < 2) {
       ctx.addIssue({
         code: 'custom',
         path: ['allowedEventKinds'],
-        message: 'ROLE_ASSIGN requires at least two roles',
+        message: 'ROLE_CHANGE requires at least two roles',
+      });
+    }
+
+    // Events and modifiers must agree in both directions.
+    const modifiers = definition.allowedModifiers;
+    if (new Set(modifiers).size !== modifiers.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['allowedModifiers'],
+        message: 'allowedModifiers must not contain duplicates',
+      });
+    }
+    for (const kind of kinds) {
+      const introduced = MODIFIERS_BY_EVENT[kind];
+      if (introduced.length > 0 && !introduced.some((modifier) => modifiers.includes(modifier))) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['allowedModifiers'],
+          message: `${kind} is allowed but none of its modifiers (${introduced.join(', ')}) is`,
+        });
+      }
+    }
+    for (const modifier of modifiers) {
+      const supported = kinds.some((kind) => MODIFIERS_BY_EVENT[kind].includes(modifier));
+      if (!supported) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['allowedModifiers'],
+          message: `${modifier} is allowed but no allowed event introduces it`,
+        });
+      }
+    }
+
+    const actions = definition.allowedActionKinds;
+    if (new Set(actions).size !== actions.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['allowedActionKinds'],
+        message: 'allowedActionKinds must not contain duplicates',
+      });
+    }
+    // An objective nobody can report as completed could never be scored.
+    if (
+      (kinds.includes('CHALLENGE') || kinds.includes('BONUS_OBJECTIVE')) &&
+      !actions.includes('PLAYER_COMPLETED_CHALLENGE')
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['allowedActionKinds'],
+        message: 'CHALLENGE and BONUS_OBJECTIVE require the PLAYER_COMPLETED_CHALLENGE action',
+      });
+    }
+
+    // Powers exist exactly when POWER_UP does, and need an action to activate them.
+    const powerIds = definition.powers.map((power) => power.id);
+    if (new Set(powerIds).size !== powerIds.length) {
+      ctx.addIssue({ code: 'custom', path: ['powers'], message: 'power ids must be unique' });
+    }
+    if (kinds.includes('POWER_UP') !== definition.powers.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['powers'],
+        message: 'powers must be declared if and only if POWER_UP is allowed',
+      });
+    }
+    if (kinds.includes('POWER_UP') && !actions.includes('PLAYER_ACTIVATED_POWER')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['allowedActionKinds'],
+        message: 'POWER_UP requires the PLAYER_ACTIVATED_POWER action',
+      });
+    }
+
+    const ruleIds = definition.rules.map((rule) => rule.id);
+    if (new Set(ruleIds).size !== ruleIds.length) {
+      ctx.addIssue({ code: 'custom', path: ['rules'], message: 'rule ids must be unique' });
+    }
+    for (const [index, rule] of definition.rules.entries()) {
+      if (!actions.includes(rule.action)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rules', index, 'action'],
+          message: `rule "${rule.id}" governs ${rule.action}, which is not an allowed action`,
+        });
+      }
+      for (const field of ['actorRoleId', 'targetRoleId'] as const) {
+        if (!roleIds.includes(rule[field])) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['rules', index, field],
+            message: `rule "${rule.id}" names unknown role "${rule[field]}"`,
+          });
+        }
+      }
+    }
+    // A reportable action with no rule would have no defined outcome.
+    for (const action of ['PLAYER_TAGGED', 'PLAYER_FOUND'] as const) {
+      if (actions.includes(action) && !definition.rules.some((rule) => rule.action === action)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rules'],
+          message: `${action} is allowed but no rule says what it does`,
+        });
+      }
+    }
+
+    const triggers = definition.scoring.map((rule) => rule.trigger);
+    if (new Set(triggers).size !== triggers.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['scoring'],
+        message: 'each scoring trigger may appear once',
+      });
+    }
+
+    const winTypes = definition.winConditions.map((condition) => condition.type);
+    if (new Set(winTypes).size !== winTypes.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['winConditions'],
+        message: 'each win condition may appear once',
       });
     }
 

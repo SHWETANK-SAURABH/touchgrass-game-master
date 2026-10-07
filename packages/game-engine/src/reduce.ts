@@ -1,89 +1,94 @@
-import { createRng, err, ok, type Result } from '@touchgrass/shared';
+import { err, ok, type Result } from '@touchgrass/shared';
 import { getGameDefinition, findGameDefinition } from '@touchgrass/game-definitions';
-import type { EngineCommand } from './commands';
+import type { EngineContext } from './apply-event';
+import type { CreateSessionCommand, SessionCommand } from './commands';
 import { type EngineError, engineError } from './errors';
-import { assignRoles } from './roles';
-import type { LogEntry, Player, SessionState, SessionStatus, EventSource } from './state';
+import {
+  type GameState,
+  type GameStatus,
+  type HistoryEntry,
+  type HistorySource,
+  type PlayerState,
+  isTerminalStatus,
+} from './state';
+import { advanceTime } from './time';
 
 /**
- * The deterministic core.
+ * Host commands.
  *
- * `reduce` is a pure function. Given the same state and the same command with the
- * same context, it returns the same next state — every time, on every host. No
- * clock reads, no `Math.random()`, no I/O, no imports from the AI package.
+ * `reduce` handles the session-level operations: players joining and leaving,
+ * phases, pause, resume, abort. It is a pure function of (state, command,
+ * context). Gameplay does not go through here: player actions are handled in
+ * process-action.ts and game events in apply-event.ts.
  *
- * That purity is the product's central safety claim made structural: the model
- * can propose whatever it likes, but the only thing that can move a session is
- * this function, and this function is small enough to read in one sitting and
- * covered by tests that pin its behaviour.
+ * Like every entry point, it first brings the state up to the supplied time, so
+ * a command never acts on a round that has already run out.
  */
 
-/** Non-deterministic inputs, supplied by the caller rather than read ambiently. */
-export interface EngineContext {
-  /** Wall clock for this command, in epoch ms. */
-  readonly now: number;
-  /** Id generator for log entries. Injected so tests and replay produce stable ids. */
-  readonly nextEntryId: (sequence: number) => string;
-}
-
-/** Statuses in which the session accepts gameplay commands. */
-const RUNNING: readonly SessionStatus[] = ['active'];
-const TERMINAL: readonly SessionStatus[] = ['completed', 'aborted'];
-
-function appendLog(
-  state: SessionState,
+function appendHistory(
+  state: GameState,
   ctx: EngineContext,
-  entry: { source: EventSource; type: string; summary: string; detail?: Record<string, unknown> },
-): LogEntry[] {
-  const sequence = state.log.length;
+  entry: {
+    source: HistorySource;
+    command: SessionCommand['type'] | 'CREATE_SESSION';
+    summary: string;
+    detail?: Record<string, unknown>;
+  },
+): HistoryEntry[] {
+  const sequence = state.history.length;
   return [
-    ...state.log,
+    ...state.history,
     {
       id: ctx.nextEntryId(sequence),
       sequence,
       at: ctx.now,
       source: entry.source,
-      type: entry.type,
       summary: entry.summary,
-      ...(entry.detail ? { detail: entry.detail } : {}),
+      record: {
+        kind: 'COMMAND',
+        command: entry.command,
+        ...(entry.detail ? { detail: entry.detail } : {}),
+      },
     },
   ];
 }
 
-function wrongStatus(state: SessionState, expected: readonly SessionStatus[]): EngineError {
+function wrongStatus(state: GameState, expected: readonly GameStatus[]): EngineError {
   return engineError(
-    'WRONG_STATUS',
-    `Command requires status ${expected.join(' or ')}, but the session is "${state.status}".`,
+    'INVALID_STATE_TRANSITION',
+    `Command requires status ${expected.join(' or ')}, but the game is "${state.status}".`,
     { status: state.status, expected: [...expected] },
   );
 }
 
-/**
- * Creates a session. Separate from `reduce` because there is no prior state to
- * reduce from, and because it is the one place that validates the game id.
- */
+/** Creates a game in the lobby, with the settings of its definition. */
 export function createSession(
-  command: Extract<EngineCommand, { type: 'CREATE_SESSION' }>,
+  command: CreateSessionCommand,
   ctx: EngineContext,
-): Result<SessionState, EngineError> {
+): Result<GameState, EngineError> {
   const definition = findGameDefinition(command.gameId);
   if (!definition) {
     return err(
-      engineError('UNKNOWN_GAME', `No game definition for id "${command.gameId}".`, {
+      engineError('INVALID_GAME_CONFIGURATION', `No game definition for id "${command.gameId}".`, {
         gameId: command.gameId,
       }),
     );
   }
 
-  const base: SessionState = {
+  const base: GameState = {
     id: command.sessionId,
     gameId: definition.id,
     joinCode: command.joinCode,
     status: 'lobby',
     phaseIndex: 0,
+    settings: definition.settings,
+    currentRound: 0,
+    timer: { endsAt: null, pausedAt: null },
     players: [],
-    modifiers: [],
-    log: [],
+    activeModifiers: [],
+    activeObjectives: [],
+    history: [],
+    winnerIds: [],
     createdAt: ctx.now,
     startedAt: null,
     endedAt: null,
@@ -92,9 +97,9 @@ export function createSession(
 
   return ok({
     ...base,
-    log: appendLog(base, ctx, {
+    history: appendHistory(base, ctx, {
       source: 'engine',
-      type: 'CREATE_SESSION',
+      command: 'CREATE_SESSION',
       summary: `Session opened for ${definition.name}. Join code ${command.joinCode}.`,
       detail: { gameId: definition.id },
     }),
@@ -102,15 +107,21 @@ export function createSession(
 }
 
 export function reduce(
-  state: SessionState,
-  command: Exclude<EngineCommand, { type: 'CREATE_SESSION' }>,
+  input: GameState,
+  command: SessionCommand,
   ctx: EngineContext,
-): Result<SessionState, EngineError> {
-  if (TERMINAL.includes(state.status)) {
+): Result<GameState, EngineError> {
+  const advanced = advanceTime(input, ctx);
+  if (!advanced.ok) return advanced;
+  const state = advanced.value;
+
+  if (isTerminalStatus(state.status)) {
     return err(
-      engineError('WRONG_STATUS', `Session "${state.id}" has ended and accepts no more commands.`, {
-        status: state.status,
-      }),
+      engineError(
+        'GAME_ALREADY_COMPLETED',
+        `Game "${state.id}" has ended and accepts no more commands.`,
+        { status: state.status },
+      ),
     );
   }
 
@@ -118,7 +129,13 @@ export function reduce(
 
   switch (command.type) {
     case 'ADD_PLAYER': {
-      if (state.status !== 'lobby') return err(wrongStatus(state, ['lobby']));
+      if (state.status !== 'lobby') {
+        return err(
+          engineError('GAME_ALREADY_STARTED', `Game "${state.id}" has already started.`, {
+            status: state.status,
+          }),
+        );
+      }
       if (state.players.some((player) => player.id === command.playerId)) {
         return err(
           engineError('DUPLICATE_PLAYER', `Player "${command.playerId}" is already in the lobby.`, {
@@ -126,30 +143,33 @@ export function reduce(
           }),
         );
       }
-      if (state.players.length >= definition.maxPlayers) {
+      const present = state.players.filter((player) => player.status !== 'left');
+      if (present.length >= definition.maxPlayers) {
         return err(
           engineError(
-            'SESSION_FULL',
+            'PLAYER_LIMIT_EXCEEDED',
             `${definition.name} is full at ${definition.maxPlayers} players.`,
             { max: definition.maxPlayers },
           ),
         );
       }
 
-      const player: Player = {
+      const player: PlayerState = {
         id: command.playerId,
         displayName: command.displayName,
         roleId: null,
         score: 0,
+        status: 'active',
+        ready: false,
+        powers: [],
         joinedAt: ctx.now,
-        active: true,
       };
       return ok({
         ...state,
         players: [...state.players, player],
-        log: appendLog(state, ctx, {
+        history: appendHistory(state, ctx, {
           source: 'human',
-          type: 'ADD_PLAYER',
+          command: 'ADD_PLAYER',
           summary: `${command.displayName} joined.`,
           detail: { playerId: command.playerId },
         }),
@@ -158,78 +178,38 @@ export function reduce(
 
     case 'REMOVE_PLAYER': {
       const player = state.players.find((candidate) => candidate.id === command.playerId);
-      if (!player) {
+      if (!player || player.status === 'left') {
         return err(
-          engineError('UNKNOWN_PLAYER', `No player "${command.playerId}" in this session.`, {
+          engineError('INVALID_PLAYER', `No player "${command.playerId}" in this game.`, {
             playerId: command.playerId,
           }),
         );
       }
-      // Marked inactive rather than deleted: removing the record would make the
-      // log unreadable and would erase a score that other entries refer to.
+      // Marked as left rather than deleted: removing the record would make the
+      // history unreadable and would erase a score that other entries refer to.
       return ok({
         ...state,
         players: state.players.map((candidate) =>
-          candidate.id === command.playerId ? { ...candidate, active: false } : candidate,
+          candidate.id === command.playerId ? { ...candidate, status: 'left' as const } : candidate,
         ),
-        log: appendLog(state, ctx, {
+        history: appendHistory(state, ctx, {
           source: 'human',
-          type: 'REMOVE_PLAYER',
+          command: 'REMOVE_PLAYER',
           summary: `${player.displayName} left.`,
           detail: { playerId: command.playerId },
         }),
       });
     }
 
-    case 'START_SESSION': {
-      if (state.status !== 'lobby') return err(wrongStatus(state, ['lobby']));
-
-      const present = state.players.filter((player) => player.active);
-      const assignment = assignRoles(
-        definition,
-        present.map((player) => player.id),
-        createRng(state.randomSeed),
-      );
-      if (!assignment.ok) return assignment;
-
-      const players = state.players.map((player) => ({
-        ...player,
-        roleId: assignment.value.get(player.id) ?? null,
-      }));
-      const roleSummary = definition.roles
-        .map((role) => {
-          const count = players.filter((player) => player.roleId === role.id).length;
-          return `${count} ${role.label}`;
-        })
-        .join(', ');
-
-      return ok({
-        ...state,
-        status: 'active',
-        startedAt: ctx.now,
-        phaseIndex: 0,
-        players,
-        log: appendLog(state, ctx, {
-          source: 'engine',
-          type: 'START_SESSION',
-          summary: `${definition.name} started: ${roleSummary}.`,
-          detail: {
-            roles: Object.fromEntries(assignment.value),
-            phaseId: definition.phases[0]?.id,
-          },
-        }),
-      });
-    }
-
     case 'ADVANCE_PHASE': {
-      if (!RUNNING.includes(state.status)) return err(wrongStatus(state, RUNNING));
+      if (state.status !== 'active') return err(wrongStatus(state, ['active']));
       const nextIndex = state.phaseIndex + 1;
       const nextPhase = definition.phases[nextIndex];
       if (!nextPhase) {
         return err(
           engineError(
-            'NO_FURTHER_PHASE',
-            `${definition.name} has no phase after "${definition.phases[state.phaseIndex]?.id ?? 'unknown'}". Complete the session instead.`,
+            'INVALID_PHASE',
+            `${definition.name} has no phase after "${definition.phases[state.phaseIndex]?.id ?? 'unknown'}".`,
             { phaseIndex: state.phaseIndex },
           ),
         );
@@ -237,9 +217,9 @@ export function reduce(
       return ok({
         ...state,
         phaseIndex: nextIndex,
-        log: appendLog(state, ctx, {
-          source: 'engine',
-          type: 'ADVANCE_PHASE',
+        history: appendHistory(state, ctx, {
+          source: 'human',
+          command: 'ADVANCE_PHASE',
           summary: `Phase: ${nextPhase.label}.`,
           detail: { phaseId: nextPhase.id, phaseIndex: nextIndex },
         }),
@@ -247,13 +227,16 @@ export function reduce(
     }
 
     case 'PAUSE_SESSION': {
-      if (!RUNNING.includes(state.status)) return err(wrongStatus(state, RUNNING));
+      if (state.status !== 'active') return err(wrongStatus(state, ['active']));
+      // The clock stops here. `endsAt` and every expiry are left as they are and
+      // moved forward by the length of the pause when the game resumes.
       return ok({
         ...state,
         status: 'paused',
-        log: appendLog(state, ctx, {
+        timer: { ...state.timer, pausedAt: ctx.now },
+        history: appendHistory(state, ctx, {
           source: 'human',
-          type: 'PAUSE_SESSION',
+          command: 'PAUSE_SESSION',
           summary: `Paused: ${command.reason}`,
           detail: { reason: command.reason },
         }),
@@ -261,71 +244,49 @@ export function reduce(
     }
 
     case 'RESUME_SESSION': {
-      if (state.status !== 'paused') return err(wrongStatus(state, ['paused']));
+      if (state.status !== 'paused' || state.timer.pausedAt === null) {
+        return err(wrongStatus(state, ['paused']));
+      }
+      const pausedFor = ctx.now - state.timer.pausedAt;
       return ok({
         ...state,
         status: 'active',
-        log: appendLog(state, ctx, {
+        timer: {
+          endsAt: state.timer.endsAt === null ? null : state.timer.endsAt + pausedFor,
+          pausedAt: null,
+        },
+        activeModifiers: state.activeModifiers.map((modifier) => ({
+          ...modifier,
+          expiresAt: modifier.expiresAt + pausedFor,
+        })),
+        activeObjectives: state.activeObjectives.map((objective) => ({
+          ...objective,
+          expiresAt: objective.expiresAt + pausedFor,
+        })),
+        history: appendHistory(state, ctx, {
           source: 'human',
-          type: 'RESUME_SESSION',
+          command: 'RESUME_SESSION',
           summary: 'Resumed.',
-        }),
-      });
-    }
-
-    case 'COMPLETE_SESSION': {
-      if (state.status === 'lobby') return err(wrongStatus(state, ['active', 'paused']));
-      return ok({
-        ...state,
-        status: 'completed',
-        endedAt: ctx.now,
-        log: appendLog(state, ctx, {
-          source: 'human',
-          type: 'COMPLETE_SESSION',
-          summary: `${definition.name} finished.`,
+          detail: { pausedForMs: pausedFor },
         }),
       });
     }
 
     case 'ABORT_SESSION': {
-      // Legal from any non-terminal status, including the lobby. Stopping a game
-      // must never be blocked by a state check.
+      // Legal from any non-terminal status, including the lobby and a pause.
+      // Stopping a game must never be blocked by a state check.
       return ok({
         ...state,
         status: 'aborted',
         endedAt: ctx.now,
-        log: appendLog(state, ctx, {
+        timer: { endsAt: null, pausedAt: null },
+        history: appendHistory(state, ctx, {
           source: 'human',
-          type: 'ABORT_SESSION',
+          command: 'ABORT_SESSION',
           summary: `Stopped: ${command.reason}`,
           detail: { reason: command.reason },
         }),
       });
     }
   }
-}
-
-/**
- * Replays a command sequence from scratch.
- *
- * Exists to be used, not just to exist: the tests assert that replaying a
- * session's own command list reproduces its state byte for byte, which is the
- * property that lets a future Redis/Mongo layer store commands instead of
- * snapshots, and lets a disputed call be settled by re-running the log.
- */
-export function replay(
-  create: Extract<EngineCommand, { type: 'CREATE_SESSION' }>,
-  commands: readonly Exclude<EngineCommand, { type: 'CREATE_SESSION' }>[],
-  contextFor: (index: number) => EngineContext,
-): Result<SessionState, EngineError> {
-  const created = createSession(create, contextFor(0));
-  if (!created.ok) return created;
-
-  let state = created.value;
-  for (const [index, command] of commands.entries()) {
-    const next = reduce(state, command, contextFor(index + 1));
-    if (!next.ok) return next;
-    state = next.value;
-  }
-  return ok(state);
 }

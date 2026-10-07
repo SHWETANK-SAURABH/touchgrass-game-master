@@ -1,4 +1,11 @@
-import type { GameDefinition, GameEventKind } from './schema';
+import type { GameDefinition } from './schema';
+import {
+  isLifecycleEventKind,
+  isOptionalEventKind,
+  type GameEventKind,
+  type GameModifierKind,
+  type PlayerActionKind,
+} from './vocabulary';
 import { hideAndSeek } from './games/hide-and-seek';
 import { iceAndFire } from './games/ice-and-fire';
 import { natureChallenge } from './games/nature-challenge';
@@ -42,9 +49,35 @@ export function getGameDefinition(gameId: string): GameDefinition {
   return definition;
 }
 
-/** True when this game permits the Game Master to propose that kind of event. */
+/**
+ * True when this game supports that kind of event.
+ *
+ * Lifecycle events are always supported. Optional events must be listed by the
+ * definition. Engine-derived events follow from what the definition already
+ * declares: a rule that puts a player out, powers, or objectives.
+ */
 export function permitsEventKind(definition: GameDefinition, kind: GameEventKind): boolean {
-  return definition.allowedEventKinds.includes(kind);
+  if (isLifecycleEventKind(kind)) return true;
+  if (isOptionalEventKind(kind)) return definition.allowedEventKinds.includes(kind);
+  switch (kind) {
+    case 'PLAYER_OUT':
+      return definition.rules.some((rule) => rule.outcome === 'TARGET_OUT');
+    case 'POWER_ACTIVATED':
+      return definition.allowedEventKinds.includes('POWER_UP');
+    case 'OBJECTIVE_COMPLETED':
+      return (
+        definition.allowedEventKinds.includes('CHALLENGE') ||
+        definition.allowedEventKinds.includes('BONUS_OBJECTIVE')
+      );
+  }
+}
+
+export function permitsModifier(definition: GameDefinition, kind: GameModifierKind): boolean {
+  return definition.allowedModifiers.includes(kind);
+}
+
+export function permitsActionKind(definition: GameDefinition, kind: PlayerActionKind): boolean {
+  return definition.allowedActionKinds.includes(kind);
 }
 
 /** The role that soaks up players left over after every other role meets its minimum. */

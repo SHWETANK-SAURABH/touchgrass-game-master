@@ -82,7 +82,7 @@ flowchart TD
     Model["Gemma via ModelProvider<br/>grammar-constrained decoding"] --> Raw
 
     Raw["Raw JSON completion"] --> Zod
-    Zod{"Zod validation<br/>gameEventProposalSchema"}
+    Zod{"Zod validation<br/>gameEventSchema"}
     Zod -- invalid --> Repair["Repair loop<br/>(bounded retries)"]
     Repair --> Model
     Zod -- valid --> Safety
@@ -133,8 +133,9 @@ flowchart LR
 
 What is already in place:
 
-- **`gameMasterTurnSchema`** (`packages/game-engine/src/proposal.ts`) — the exact shape a turn must
-  take: one to three proposals, each a member of a strict discriminated union of seven event kinds.
+- **`gameEventSchema`** (`packages/game-engine/src/events.ts`) — the exact shape anything the agent
+  suggests must take: a strict discriminated union of event kinds, of which an outside source may send seven. How many events one turn may
+  carry is a Phase 3 decision.
 - **`generateStructured()`** (`packages/ai/src/structured.ts`) — Zod → JSON Schema → constrained
   generation → Zod validation → bounded repair loop.
 - **Per-game guidance as data** — each definition carries a `gameMaster` block with a persona, an
@@ -154,91 +155,86 @@ latency to a turn that people are physically waiting on. One agent proposes; cod
 
 ## 5. Game engine architecture
 
-The engine is the **only** thing that can change a session, and it is a pure function.
+The engine is the **only** thing that can change a game. It is described in full in
+[GAME_ENGINE.md](./packages/game-engine/GAME_ENGINE.md); this is the summary.
 
-```ts
-reduce(state: SessionState, command: SessionCommand, ctx: EngineContext): Result<SessionState, EngineError>
+```
+PlayerAction → validation → action processing → GameEvent(s) → event application
+             → scoring → win evaluation → GameState
 ```
 
-Three properties, each enforced by tests:
+Tag and Hide & Seek are fully playable through it with no AI.
 
-**It is pure.** No `Date.now()`, no `Math.random()`, no I/O, no import from `packages/ai`. Clock and
-randomness arrive through `EngineContext` and a seeded RNG stored on the session. A test asserts that
-`reduce` never mutates the state handed to it.
+**Four inputs, each a pure function of (state, input, supplied time):**
 
-**It is replayable.** `replay()` re-runs a command list from scratch; a test asserts two replays of
-the same script produce byte-identical state. This is what lets a future persistence layer store
-commands rather than snapshots, and lets a disputed call be settled by re-running the log.
+| Input          | Entry point           | Notes                                                         |
+| -------------- | --------------------- | ------------------------------------------------------------- |
+| Host command   | `reduce`              | Join, leave, pause, resume, abort                             |
+| Player action  | `processPlayerAction` | A report of intent; turned into events by the game's rules    |
+| External event | `submitGameEvent`     | Host today, Game Master in Phase 3; optional event kinds only |
+| Time           | `advanceTime`         | Ends rounds and the game when they are due                    |
 
-**It fails closed, as a value.** Illegal commands return a typed `EngineError` with one of nine
-codes. Joining a running game, starting below the player minimum, advancing past the last phase, and
-anything at all after a terminal status are all refusals — not exceptions, not silent no-ops.
+**It is pure.** No `Date.now()`, no `Math.random()`, no timers, no I/O, no import from
+`packages/ai`. The clock value arrives in `EngineContext`; role assignment uses a seeded RNG stored
+in the state.
+
+**It is replayable.** `replay()` rebuilds a game from its recorded inputs; tests assert the result
+is identical every time, and that advancing time in one step or many gives the same state.
+
+**It fails closed, as a value.** A refusal is a typed `EngineError` returned through `Result`, and
+the caller's state is untouched.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> lobby: CREATE_SESSION
-    lobby --> lobby: ADD_PLAYER / REMOVE_PLAYER
-    lobby --> active: START_SESSION<br/>(assigns roles deterministically)
-    active --> active: ADVANCE_PHASE
+    [*] --> lobby
+    lobby --> starting: every present player is ready
+    starting --> active: ROUND_START
+    active --> round_end: ROUND_END (timer)
+    round_end --> active: ROUND_START
+    round_end --> completed: GAME_END
     active --> paused: PAUSE_SESSION
     paused --> active: RESUME_SESSION
-    active --> completed: COMPLETE_SESSION
-    paused --> completed: COMPLETE_SESSION
-    lobby --> aborted: ABORT_SESSION
-    active --> aborted: ABORT_SESSION
-    paused --> aborted: ABORT_SESSION
+    lobby --> aborted
+    starting --> aborted
+    active --> aborted
+    round_end --> aborted
+    paused --> aborted
     completed --> [*]
     aborted --> [*]
 ```
 
-`ABORT_SESSION` is legal from every non-terminal status, including the lobby. **Stopping a game must
-never be blocked by a state check** — if someone is hurt, the host presses stop and the engine
-complies.
+A game starts when its players are ready and completes when its last round ends; there is no start
+or complete command. A paused game cannot complete. **Stopping a game is never blocked**: abort is
+legal from every non-terminal status.
+
+### Events
+
+The ten kinds of the brief — `ROUND_START`, `ROUND_END`, `ZONE_CHANGE`, `CHALLENGE`, `POWER_UP`,
+`RULE_MODIFIER`, `BONUS_OBJECTIVE`, `TIME_EXTENSION`, `ROLE_CHANGE`, `GAME_END` — plus three the
+engine derives from player actions: `PLAYER_OUT`, `POWER_ACTIVATED`, `OBJECTIVE_COMPLETED`. There is
+no event that sets a score. Scores are a consequence the engine computes when an event is applied,
+and each award is recorded on that event's history entry.
+
+An outside source may send only the optional kinds a game supports. It cannot send lifecycle or
+derived events, or a `ROLE_CHANGE` that claims to be a tag.
 
 ### Role assignment is engine work, not model work
 
 Who chases whom is a fairness decision with hard constraints (minimums, maximums, an overflow role),
-not a creative one. `assignRoles` fills each role to its declared minimum from a seed-shuffled player
-list, pushes any overflow past a role's maximum into the default role, and refuses outright if the
-headcount cannot satisfy the definition. Same seed, same joining order, same teams — on any host.
+not a creative one. `assignRoles` uses a seed-shuffled player list, so the same seed and joining
+order give the same roles on any host.
 
-### What exists today, and the Phase 2 contract
+### What is and is not implemented
 
-Phase 1 implemented session lifecycle only: the diagram above is the complete set of transitions the
-code performs. **Phase 2 builds the rest of the engine**, and the contract it must meet is fixed here
-so the implementation has one source of truth.
-
-**Two input paths, one engine.** Nothing reaches state except through validation:
-
-```
-PlayerAction  →  action validation  →  GameEvent  →  state transition
-AI proposal   →  event validation   →  GameEvent  →  state transition
-```
-
-A `PlayerAction` is something a player reports (tagged someone, found someone). The engine validates
-it and turns it into a `GameEvent`. An AI proposal is never applied directly: it is validated and
-either becomes a `GameEvent` or is refused. Clients and models cannot submit state.
-
-**Lifecycle.** The engine must support seven statuses:
-
-```
-LOBBY → STARTING → ACTIVE ⇄ ROUND_END → COMPLETED
-                   ACTIVE ⇄ PAUSED
-        any non-terminal status → ABORTED
-```
-
-All seven are declared in `sessionStatusSchema` (as lower-case values). `starting` and `round_end`
-are declared but unreachable until Phase 2 implements rounds.
-
-**Player counts.** Tag supports 2–4 players. A solo game may declare a minimum of 1; the definition
-schema allows it.
-
-**Still to build in Phase 2:** player actions, the game-event vocabulary and its handlers, rounds,
-timers, scoring, win conditions, and modifiers with deterministic behaviour. None of these exist yet.
-`SessionState.modifiers` and the `'game-master'` log provenance are present but nothing writes them.
-
-**Not part of Phase 2:** the Game Master, Mastra, Gemma, the safety validator, realtime, and
-persistence. The engine must run and be tested with no model at all.
+| Piece                                             | State                                                            |
+| ------------------------------------------------- | ---------------------------------------------------------------- |
+| Lifecycle, rounds, deterministic time, pause      | Implemented                                                      |
+| Tag and Hide & Seek rules, scoring, winners       | Implemented                                                      |
+| Shield power (`TAG_IMMUNITY`)                     | Implemented                                                      |
+| Zones and freeze periods                          | Stored and expired only; nothing is enforced                     |
+| Ice & Fire, Treasure Hunt, Nature Challenge rules | Not designed; definitions are valid but have no rules or scoring |
+| Game Master, Mastra, Gemma                        | Phase 3                                                          |
+| Safety validator, realtime, persistence           | Later                                                            |
 
 ---
 
@@ -327,7 +323,7 @@ flowchart LR
     end
 
     subgraph Hot["Hot — later phase"]
-        R[("Redis<br/>live SessionState<br/>join-code → session")]
+        R[("Redis<br/>live GameState<br/>join-code → game")]
     end
 
     subgraph Durable["Durable — later phase"]
@@ -346,7 +342,7 @@ The division of labour:
 | Store             | Holds                                                            | Why there                                                                  |
 | ----------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | **Code**          | Game definitions, hazard taxonomy                                | They are reviewed, tested, and versioned with the logic that reads them.   |
-| **Redis**         | Live `SessionState`, join-code lookup, pub/sub                   | Sub-millisecond reads on the referee path; naturally ephemeral.            |
+| **Redis**         | Live `GameState`, join-code lookup, pub/sub                      | Sub-millisecond reads on the referee path; naturally ephemeral.            |
 | **MongoDB Atlas** | Append-only command log, finished sessions, every safety verdict | Durable, queryable, and the basis of the audit trail SAFETY.md commits to. |
 
 **Why the command log is the system of record.** Storing commands rather than snapshots means the
@@ -498,16 +494,16 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase       | Scope                                                                                                    | Status       |
-| ----------- | -------------------------------------------------------------------------------------------------------- | ------------ |
-| **Phase 1** | Monorepo, contracts, model abstraction, session-lifecycle engine core, game catalogue, hazard taxonomy   | **Complete** |
-| Phase 2     | Deterministic game engine: player actions, game events, rounds, timers, scoring, win conditions          | Next         |
-| Phase 3     | Game Master: Mastra agent on Gemma, proposing validated game events to the engine                        | Planned      |
-| Later       | Safety validator, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment — not scheduled | Planned      |
+| Phase   | Scope                                                                                                       | Status       |
+| ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
+| Phase 3 | Game Master: Mastra agent on Gemma, sending validated game events to the engine                             | Next         |
+| Later   | Safety validator, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment — not scheduled    | Planned      |
 
 **Mastra is not installed yet.** It is the intended agent framework, and it arrives in Phase 3 with
 the agent that uses it. Installing a framework ahead of the code that needs it produces a dead
-dependency; the seam it plugs into — `gameMasterTurnSchema` and `generateStructured()` — already
+dependency; the seam it plugs into — `gameEventSchema` and `generateStructured()` — already
 exists and is tested.
 
 The same reasoning explains the missing `realtime/` and `database/` packages. The suggested structure

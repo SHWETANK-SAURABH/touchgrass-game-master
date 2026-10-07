@@ -1,14 +1,15 @@
 import { z } from 'zod';
 
 /**
- * Everything that can change a session.
+ * Host commands: the session-level operations that are not gameplay.
  *
- * Commands come from humans and from the engine itself. A model proposal is not a
- * command — it becomes one only after schema and safety validation, which is the
- * whole point of keeping the two vocabularies separate. Phase 2 adds player
- * actions, rounds, scoring and win conditions, plus the path that carries a
- * validated game event into state; until then the engine handles only session
- * lifecycle, which is enough to prove determinism and replay.
+ * Creating a session, letting players in and out, pausing and stopping are done
+ * through these commands. They are a separate vocabulary from PlayerAction (what
+ * a player reports, actions.ts) and GameEvent (a validated gameplay change,
+ * events.ts).
+ *
+ * There is no "start" or "complete" command. A game starts when its players are
+ * ready, and completes when its last round ends; neither needs a host.
  */
 
 export const createSessionCommandSchema = z
@@ -36,12 +37,6 @@ export const removePlayerCommandSchema = z
   })
   .strict();
 
-export const startSessionCommandSchema = z
-  .object({
-    type: z.literal('START_SESSION'),
-  })
-  .strict();
-
 export const advancePhaseCommandSchema = z
   .object({
     type: z.literal('ADVANCE_PHASE'),
@@ -61,12 +56,6 @@ export const resumeSessionCommandSchema = z
   })
   .strict();
 
-export const completeSessionCommandSchema = z
-  .object({
-    type: z.literal('COMPLETE_SESSION'),
-  })
-  .strict();
-
 export const abortSessionCommandSchema = z
   .object({
     type: z.literal('ABORT_SESSION'),
@@ -78,11 +67,9 @@ export const engineCommandSchema = z.discriminatedUnion('type', [
   createSessionCommandSchema,
   addPlayerCommandSchema,
   removePlayerCommandSchema,
-  startSessionCommandSchema,
   advancePhaseCommandSchema,
   pauseSessionCommandSchema,
   resumeSessionCommandSchema,
-  completeSessionCommandSchema,
   abortSessionCommandSchema,
 ]);
 

@@ -5,7 +5,7 @@ import { listGameDefinitions } from '@touchgrass/game-definitions';
 export const metadata: Metadata = {
   title: 'Games',
   description:
-    'Every TouchGrass game, with its roles, phases, safety profile, and the event kinds the Game Master may propose.',
+    'Every TouchGrass game, with its roles, phases, safety profile, and the optional event kinds it supports.',
 };
 
 export default function GamesPage() {

@@ -46,20 +46,19 @@ to verify that any spatial instruction is safe. The only defensible posture is t
 that could be unsafe, and to check every candidate against a fixed list of things that are never
 acceptable regardless of context.
 
-A concrete example of why schema validation is not enough. This proposal is **perfectly valid** under
-`gameEventProposalSchema`:
+A concrete example of why schema validation is not enough. This event is **perfectly valid** under
+`gameEventSchema`, and Tag supports `ZONE_CHANGE`:
 
 ```json
 {
-  "kind": "MODIFIER",
-  "rationale": "The runners are coasting and need the area opened up.",
-  "rule": "Runners may now cross the road to the far pavement for ten seconds.",
-  "target": { "roleIds": ["runner"], "playerIds": [] },
-  "durationSeconds": 10
+  "type": "ZONE_CHANGE",
+  "modifier": "SAFE_ZONE",
+  "zone": "the far pavement, across the road",
+  "durationSeconds": 30
 }
 ```
 
-Correct shape. Correct types. Within every bound. Plausible rationale. And it could kill a child.
+Correct shape. Correct types. Within every bound. And it could kill a child.
 
 Zod answers _"is this the right shape"_. Safety answers _"should a child in a field hear this"_. They
 are different questions and need separate passes.
@@ -152,15 +151,15 @@ whole architecture assumes this layer will sometimes fail.
 coordinate field anywhere, so a proposal cannot claim spatial authority. Durations max at 300s, score
 deltas at ±10, proposals at three per turn. `.strict()` means an unexpected key is a rejection.
 
-**Layer 3 — lexical hazard matching** _(planned)_. `proposalTextFragments()` already extracts every
-human-readable string from any proposal kind — rationale, rule, instruction, landmark, announcement —
-so the matcher has a single, exhaustive surface to scan. Word matching alone is both evadable and
+**Layer 3 — lexical hazard matching** _(planned)_. The matcher scans every
+human-readable string an event can carry — today that is `zone` on `ZONE_CHANGE` and `description` on
+`CHALLENGE` and `BONUS_OBJECTIVE` — so the surface it has to cover is small and known. Word matching alone is both evadable and
 over-triggering, which is why it is one layer of five rather than the mechanism.
 
 **Layer 4 — structural checks** _(planned)_. These do not read text at all; they compare the proposal
-against the derived policy. Does a `MODIFIER` introduce contact in a game whose `contactPolicy` is
-`none`? Does `durationSeconds` exceed `policy.maxRuleDurationSeconds`? Does a `ROLE_ASSIGN` name a role
-the definition does not have, or push a role past its maximum? These are exact, unevadable, and cannot
+against the derived policy. Does a `CHALLENGE` introduce contact in a game whose `contactPolicy` is
+`none`? Does `durationSeconds` exceed `policy.maxRuleDurationSeconds`? Does a `ROLE_CHANGE` push a role
+past its maximum? These are exact, unevadable, and cannot
 produce a false positive.
 
 **Layer 5 — human authority.** `ABORT_SESSION` is legal from every non-terminal status, including the
@@ -245,7 +244,7 @@ replay real recorded turns against new rules.
 
 ## The audit trail
 
-Every state change records where it came from. `EventSource` is `'engine' | 'human' |
+Every state change records where it came from. `HistorySource` is `'engine' | 'human' |
 'game-master'`, and a Phase 1 test asserts that no lifecycle entry is ever attributed to the model.
 
 Once persistence exists, it stores per session:
@@ -282,7 +281,7 @@ a deterministic check that a human can read, reason about, and have reviewed.**
 
 | Deliverable                                                | Location                               |
 | ---------------------------------------------------------- | -------------------------------------- |
-| Lexical hazard matcher over `proposalTextFragments()`      | `packages/safety/src/lexical.ts`       |
+| Lexical hazard matcher over event text fields              | `packages/safety/src/lexical.ts`       |
 | Structural checks against the derived policy               | `packages/safety/src/structural.ts`    |
 | `validateProposal()` composing both into a `SafetyVerdict` | `packages/safety/src/validate.ts`      |
 | An adversarial corpus: proposals that must be rejected     | `packages/safety/src/__fixtures__/`    |

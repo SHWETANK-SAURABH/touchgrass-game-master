@@ -1,12 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { GAME_EVENT_KINDS, gameDefinitionSchema, type GameDefinitionInput } from './schema';
+import { gameDefinitionSchema, type GameDefinitionInput } from './schema';
+import {
+  DERIVED_EVENT_KINDS,
+  GAME_EVENT_KINDS,
+  GAME_MODIFIER_KINDS,
+  LIFECYCLE_EVENT_KINDS,
+  MODIFIERS_BY_EVENT,
+  OPTIONAL_EVENT_KINDS,
+  PLAYER_ACTION_KINDS,
+} from './vocabulary';
 import {
   GAME_IDS,
   defaultRoleOf,
   findGameDefinition,
   getGameDefinition,
   listGameDefinitions,
+  permitsActionKind,
   permitsEventKind,
+  permitsModifier,
 } from './registry';
 
 /**
@@ -31,7 +42,23 @@ function draft(): GameDefinitionInput {
       { id: 'runner', label: 'Runner', description: 'Runs.', min: 2, isDefault: true },
     ],
     phases: [{ id: 'play', label: 'Play', description: 'Open play.' }],
-    allowedEventKinds: ['ANNOUNCE', 'MODIFIER'],
+    allowedEventKinds: ['ZONE_CHANGE', 'ROLE_CHANGE'],
+    allowedModifiers: ['SAFE_ZONE', 'ROLE_SWAP'],
+    allowedActionKinds: ['PLAYER_READY', 'PLAYER_TAGGED'],
+    rules: [
+      {
+        id: 'chaser-tags-runner',
+        description: 'A tagged runner becomes the chaser.',
+        action: 'PLAYER_TAGGED',
+        actorRoleId: 'chaser',
+        targetRoleId: 'runner',
+        outcome: 'SWAP_ROLES',
+      },
+    ],
+    powers: [],
+    scoring: [{ trigger: 'TAG_MADE', points: 1 }],
+    winConditions: [{ type: 'HIGHEST_SCORE' }],
+    settings: { totalRounds: 3, roundDurationSeconds: 120 },
     modifierThemes: ['movement'],
     safety: {
       contactPolicy: 'tag-only',
@@ -78,11 +105,32 @@ describe('bundled game definitions', () => {
     expect(required).toBeLessThanOrEqual(definition.minPlayers);
   });
 
-  it.each(listGameDefinitions())('$id only allows known event kinds', (definition) => {
+  it.each(listGameDefinitions())('$id only allows optional event kinds', (definition) => {
     for (const kind of definition.allowedEventKinds) {
-      expect(GAME_EVENT_KINDS).toContain(kind);
+      expect(OPTIONAL_EVENT_KINDS).toContain(kind);
     }
   });
+
+  it.each(listGameDefinitions())(
+    '$id allows exactly the modifiers its events introduce',
+    (definition) => {
+      const introduced = new Set(
+        definition.allowedEventKinds.flatMap((kind) => MODIFIERS_BY_EVENT[kind]),
+      );
+      for (const modifier of definition.allowedModifiers) {
+        expect(introduced.has(modifier)).toBe(true);
+      }
+    },
+  );
+
+  it.each(listGameDefinitions())(
+    '$id declares settings, scoring and a win condition',
+    (definition) => {
+      expect(definition.settings.totalRounds).toBeGreaterThanOrEqual(1);
+      expect(definition.winConditions.length).toBeGreaterThanOrEqual(1);
+      expect(definition.allowedActionKinds).toContain('PLAYER_READY');
+    },
+  );
 
   it.each(listGameDefinitions())('$id gives the Game Master a prohibition list', (definition) => {
     // Every game must tell the model what it may never propose. A game with an
@@ -102,12 +150,76 @@ describe('bundled game definitions', () => {
     expect(separated).toEqual(['hide-and-seek', 'treasure-hunt']);
   });
 
-  it('keeps every contact-free game free of ROLE_ASSIGN-driven contact', () => {
+  it('keeps every contact-free game below high intensity', () => {
     for (const definition of listGameDefinitions()) {
       if (definition.safety.contactPolicy === 'none') {
         expect(definition.intensity).not.toBe('high');
       }
     }
+  });
+
+  it('plays Tag with two to four players, one of them the tagger', () => {
+    const tag = getGameDefinition('tag');
+    expect([tag.minPlayers, tag.maxPlayers]).toEqual([2, 4]);
+    expect(tag.roles.find((role) => role.id === 'tagger')).toMatchObject({ min: 1, max: 1 });
+    expect(tag.allowedEventKinds).toEqual([
+      'ZONE_CHANGE',
+      'POWER_UP',
+      'BONUS_OBJECTIVE',
+      'TIME_EXTENSION',
+      'ROLE_CHANGE',
+    ]);
+    expect(tag.rules).toEqual([
+      expect.objectContaining({
+        action: 'PLAYER_TAGGED',
+        actorRoleId: 'tagger',
+        targetRoleId: 'runner',
+        outcome: 'SWAP_ROLES',
+      }),
+    ]);
+  });
+
+  it('gives Tag the approved rules, scoring, power and settings', () => {
+    const tag = getGameDefinition('tag');
+    expect(tag.scoring).toEqual([
+      { trigger: 'TAG_MADE', points: 2 },
+      { trigger: 'ROUND_SURVIVED', points: 1 },
+    ]);
+    expect(tag.powers).toEqual([
+      expect.objectContaining({ id: 'shield', effect: 'TAG_IMMUNITY', durationSeconds: 20 }),
+    ]);
+    expect(tag.settings).toEqual({ totalRounds: 3, roundDurationSeconds: 180 });
+    expect(tag.winConditions).toEqual([{ type: 'HIGHEST_SCORE' }]);
+  });
+
+  it('gives Hide & Seek the approved scoring and settings', () => {
+    const game = getGameDefinition('hide-and-seek');
+    expect(game.scoring).toEqual([
+      { trigger: 'FOUND_PLAYER', points: 2 },
+      { trigger: 'STAYED_HIDDEN', points: 3 },
+      { trigger: 'ALL_FOUND', points: 2 },
+    ]);
+    expect(game.settings).toEqual({ totalRounds: 3, roundDurationSeconds: 300 });
+    expect(game.winConditions).toEqual([{ type: 'HIGHEST_SCORE' }]);
+  });
+
+  it.each(listGameDefinitions())('$id is won by highest score', (definition) => {
+    expect(definition.winConditions).toEqual([{ type: 'HIGHEST_SCORE' }]);
+  });
+
+  it('plays Hide & Seek with two to four players, one of them the seeker', () => {
+    const game = getGameDefinition('hide-and-seek');
+    expect([game.minPlayers, game.maxPlayers]).toEqual([2, 4]);
+    expect(game.roles.find((role) => role.id === 'seeker')).toMatchObject({ min: 1, max: 1 });
+    expect(game.rules).toEqual([
+      expect.objectContaining({
+        action: 'PLAYER_FOUND',
+        actorRoleId: 'seeker',
+        targetRoleId: 'hider',
+        outcome: 'TARGET_OUT',
+      }),
+    ]);
+    expect(game.allowedActionKinds).not.toContain('PLAYER_TAGGED');
   });
 });
 
@@ -126,12 +238,28 @@ describe('registry lookup', () => {
     expect(() => getGameDefinition('quidditch')).toThrow(/tag/);
   });
 
-  it('reports which event kinds a game permits', () => {
-    expect(permitsEventKind(getGameDefinition('tag'), 'MODIFIER')).toBe(true);
-    // Tag has no objectives to hand out; it is pure chase.
-    expect(permitsEventKind(getGameDefinition('tag'), 'OBJECTIVE')).toBe(false);
-    // Nature Challenge has no spatial rules; it works in a single small space.
-    expect(permitsEventKind(getGameDefinition('nature-challenge'), 'ZONE_RULE')).toBe(false);
+  it('reports which events, modifiers and actions a game permits', () => {
+    const tag = getGameDefinition('tag');
+    expect(permitsEventKind(tag, 'POWER_UP')).toBe(true);
+    expect(permitsEventKind(tag, 'CHALLENGE')).toBe(false);
+    // Lifecycle events are never listed and always permitted.
+    expect(permitsEventKind(tag, 'ROUND_START')).toBe(true);
+    expect(permitsEventKind(getGameDefinition('nature-challenge'), 'ZONE_CHANGE')).toBe(false);
+
+    // Derived events follow from what a definition declares.
+    const hideAndSeek = getGameDefinition('hide-and-seek');
+    expect(permitsEventKind(hideAndSeek, 'PLAYER_OUT')).toBe(true);
+    expect(permitsEventKind(tag, 'PLAYER_OUT')).toBe(false);
+    expect(permitsEventKind(tag, 'POWER_ACTIVATED')).toBe(true);
+    expect(permitsEventKind(hideAndSeek, 'POWER_ACTIVATED')).toBe(false);
+    expect(permitsEventKind(tag, 'OBJECTIVE_COMPLETED')).toBe(true);
+    expect(permitsEventKind(getGameDefinition('ice-and-fire'), 'OBJECTIVE_COMPLETED')).toBe(false);
+
+    expect(permitsModifier(tag, 'SAFE_ZONE')).toBe(true);
+    expect(permitsModifier(tag, 'FREEZE_PERIOD')).toBe(false);
+
+    expect(permitsActionKind(tag, 'PLAYER_TAGGED')).toBe(true);
+    expect(permitsActionKind(tag, 'PLAYER_FOUND')).toBe(false);
   });
 });
 
@@ -196,18 +324,21 @@ describe('gameDefinitionSchema invariants', () => {
     expect(gameDefinitionSchema.safeParse(input).success).toBe(false);
   });
 
-  it('rejects ROLE_ASSIGN in a single-role game', () => {
+  it('rejects ROLE_CHANGE in a single-role game', () => {
     const input = draft();
     input.roles = [{ id: 'solo', label: 'Solo', description: 's', min: 2, isDefault: true }];
-    input.allowedEventKinds = ['ANNOUNCE', 'ROLE_ASSIGN'];
+    input.allowedEventKinds = ['ROLE_CHANGE'];
+    input.allowedModifiers = ['ROLE_SWAP'];
+    input.allowedActionKinds = ['PLAYER_READY'];
+    input.rules = [];
     const result = gameDefinitionSchema.safeParse(input);
     expect(result.success).toBe(false);
-    expect(JSON.stringify(result.error?.issues)).toMatch(/ROLE_ASSIGN requires at least two roles/);
+    expect(JSON.stringify(result.error?.issues)).toMatch(/ROLE_CHANGE requires at least two roles/);
   });
 
   it('rejects duplicate event kinds', () => {
     const input = draft();
-    input.allowedEventKinds = ['ANNOUNCE', 'ANNOUNCE'];
+    input.allowedEventKinds = ['ZONE_CHANGE', 'ZONE_CHANGE', 'ROLE_CHANGE'];
     expect(gameDefinitionSchema.safeParse(input).success).toBe(false);
   });
 
@@ -235,5 +366,196 @@ describe('gameDefinitionSchema invariants', () => {
     const input = draft();
     input.gameMaster.avoid = [];
     expect(gameDefinitionSchema.safeParse(input).success).toBe(false);
+  });
+});
+
+describe('vocabulary', () => {
+  it('has the ten event kinds of the brief plus three engine-derived ones', () => {
+    expect([...GAME_EVENT_KINDS]).toEqual([
+      'ROUND_START',
+      'ROUND_END',
+      'ZONE_CHANGE',
+      'CHALLENGE',
+      'POWER_UP',
+      'RULE_MODIFIER',
+      'BONUS_OBJECTIVE',
+      'TIME_EXTENSION',
+      'ROLE_CHANGE',
+      'GAME_END',
+      'PLAYER_OUT',
+      'POWER_ACTIVATED',
+      'OBJECTIVE_COMPLETED',
+    ]);
+  });
+
+  it('splits event kinds into lifecycle, optional and derived with nothing left over', () => {
+    expect(
+      [...LIFECYCLE_EVENT_KINDS, ...OPTIONAL_EVENT_KINDS, ...DERIVED_EVENT_KINDS].sort(),
+    ).toEqual([...GAME_EVENT_KINDS].sort());
+  });
+
+  it('has the six player actions', () => {
+    expect([...PLAYER_ACTION_KINDS]).toEqual([
+      'PLAYER_READY',
+      'PLAYER_TAGGED',
+      'PLAYER_FOUND',
+      'PLAYER_ACTIVATED_POWER',
+      'PLAYER_COMPLETED_CHALLENGE',
+      'PLAYER_ACCEPTED_EVENT',
+    ]);
+  });
+
+  it('introduces every modifier through exactly one event', () => {
+    for (const modifier of GAME_MODIFIER_KINDS) {
+      const sources = OPTIONAL_EVENT_KINDS.filter((kind) =>
+        MODIFIERS_BY_EVENT[kind].includes(modifier),
+      );
+      expect(sources).toHaveLength(1);
+    }
+  });
+});
+
+describe('engine-facing definition invariants', () => {
+  const issuesOf = (input: GameDefinitionInput): string =>
+    JSON.stringify(gameDefinitionSchema.safeParse(input).error?.issues ?? []);
+
+  it('rejects a lifecycle event listed as optional', () => {
+    const input = draft();
+    (input as { allowedEventKinds: string[] }).allowedEventKinds = ['ROUND_START'];
+    expect(gameDefinitionSchema.safeParse(input).success).toBe(false);
+  });
+
+  it('rejects an event whose modifiers are all disallowed', () => {
+    const input = draft();
+    input.allowedModifiers = ['ROLE_SWAP'];
+    expect(issuesOf(input)).toMatch(/ZONE_CHANGE is allowed but none of its modifiers/);
+  });
+
+  it('rejects a modifier that no allowed event introduces', () => {
+    const input = draft();
+    input.allowedModifiers = ['SAFE_ZONE', 'ROLE_SWAP', 'FREEZE_PERIOD'];
+    expect(issuesOf(input)).toMatch(/FREEZE_PERIOD is allowed but no allowed event introduces it/);
+  });
+
+  it('rejects POWER_UP without any declared power', () => {
+    const input = draft();
+    input.allowedEventKinds = ['ZONE_CHANGE', 'ROLE_CHANGE', 'POWER_UP'];
+    input.allowedModifiers = ['SAFE_ZONE', 'ROLE_SWAP', 'TEMPORARY_POWER_UP'];
+    input.allowedActionKinds = ['PLAYER_READY', 'PLAYER_TAGGED', 'PLAYER_ACTIVATED_POWER'];
+    expect(issuesOf(input)).toMatch(/powers must be declared if and only if POWER_UP is allowed/);
+  });
+
+  it('rejects powers in a game that does not allow POWER_UP', () => {
+    const input = draft();
+    input.powers = [
+      {
+        id: 'shield',
+        label: 'Shield',
+        description: 'd',
+        effect: 'TAG_IMMUNITY',
+        durationSeconds: 20,
+      },
+    ];
+    expect(issuesOf(input)).toMatch(/powers must be declared if and only if POWER_UP is allowed/);
+  });
+
+  it('rejects POWER_UP when players cannot activate a power', () => {
+    const input = draft();
+    input.allowedEventKinds = ['ZONE_CHANGE', 'ROLE_CHANGE', 'POWER_UP'];
+    input.allowedModifiers = ['SAFE_ZONE', 'ROLE_SWAP', 'TEMPORARY_POWER_UP'];
+    input.powers = [
+      {
+        id: 'shield',
+        label: 'Shield',
+        description: 'd',
+        effect: 'TAG_IMMUNITY',
+        durationSeconds: 20,
+      },
+    ];
+    expect(issuesOf(input)).toMatch(/POWER_UP requires the PLAYER_ACTIVATED_POWER action/);
+  });
+
+  it('rejects an objective nobody can report as completed', () => {
+    const input = draft();
+    input.allowedEventKinds = ['ZONE_CHANGE', 'ROLE_CHANGE', 'BONUS_OBJECTIVE'];
+    input.allowedModifiers = ['SAFE_ZONE', 'ROLE_SWAP', 'BONUS_OBJECTIVE'];
+    expect(issuesOf(input)).toMatch(/require the PLAYER_COMPLETED_CHALLENGE action/);
+  });
+
+  it('rejects a rule that names an unknown role', () => {
+    const input = draft();
+    input.rules[0]!.targetRoleId = 'ghost';
+    expect(issuesOf(input)).toMatch(/names unknown role \\"ghost\\"/);
+  });
+
+  it('rejects a rule for an action the game does not allow', () => {
+    const input = draft();
+    input.rules[0]!.action = 'PLAYER_FOUND';
+    expect(issuesOf(input)).toMatch(/PLAYER_FOUND, which is not an allowed action/);
+  });
+
+  it('rejects a reportable action that no rule gives an outcome', () => {
+    const input = draft();
+    input.rules = [];
+    expect(issuesOf(input)).toMatch(/PLAYER_TAGGED is allowed but no rule says what it does/);
+  });
+
+  it('rejects a scoring trigger listed twice', () => {
+    const input = draft();
+    input.scoring = [
+      { trigger: 'TAG_MADE', points: 1 },
+      { trigger: 'TAG_MADE', points: 5 },
+    ];
+    expect(issuesOf(input)).toMatch(/each scoring trigger may appear once/);
+  });
+
+  it('rejects non-positive or fractional points', () => {
+    for (const points of [0, -1, 1.5]) {
+      const input = draft();
+      input.scoring = [{ trigger: 'TAG_MADE', points }];
+      expect(gameDefinitionSchema.safeParse(input).success).toBe(false);
+    }
+  });
+
+  it('requires at least one win condition and rejects repeats', () => {
+    const none = draft();
+    none.winConditions = [];
+    expect(gameDefinitionSchema.safeParse(none).success).toBe(false);
+
+    const twice = draft();
+    twice.winConditions = [{ type: 'HIGHEST_SCORE' }, { type: 'HIGHEST_SCORE' }];
+    expect(issuesOf(twice)).toMatch(/each win condition may appear once/);
+  });
+
+  it('rejects an unknown win condition', () => {
+    const input = draft();
+    (input as { winConditions: { type: string }[] }).winConditions = [{ type: 'ASK_THE_MODEL' }];
+    expect(gameDefinitionSchema.safeParse(input).success).toBe(false);
+  });
+
+  it('bounds the settings', () => {
+    for (const settings of [
+      { totalRounds: 0, roundDurationSeconds: 120 },
+      { totalRounds: 11, roundDurationSeconds: 120 },
+      { totalRounds: 3, roundDurationSeconds: 5 },
+      { totalRounds: 3, roundDurationSeconds: 99_999 },
+    ]) {
+      expect(gameDefinitionSchema.safeParse({ ...draft(), settings }).success).toBe(false);
+    }
+  });
+
+  it('accepts a solo game', () => {
+    const input = draft();
+    input.minPlayers = 1;
+    input.maxPlayers = 1;
+    input.roles = [
+      { id: 'explorer', label: 'Explorer', description: 'e', min: 1, isDefault: true },
+    ];
+    input.allowedEventKinds = ['CHALLENGE'];
+    input.allowedModifiers = [];
+    input.allowedActionKinds = ['PLAYER_READY', 'PLAYER_COMPLETED_CHALLENGE'];
+    input.rules = [];
+    input.scoring = [];
+    expect(gameDefinitionSchema.safeParse(input).success).toBe(true);
   });
 });

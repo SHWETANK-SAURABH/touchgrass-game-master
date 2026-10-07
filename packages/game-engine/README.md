@@ -1,55 +1,60 @@
 # @touchgrass/game-engine
 
-The deterministic authority. The **only** thing that can change a session.
+The deterministic authority: the only thing that can change a game. Full documentation is in
+[GAME_ENGINE.md](./GAME_ENGINE.md).
 
-```ts
-reduce(state: SessionState, command: SessionCommand, ctx: EngineContext): Result<SessionState, EngineError>
+```
+PlayerAction → validation → action processing → GameEvent(s) → event application
+             → scoring → win evaluation → GameState
 ```
 
-## Three properties, each pinned by tests
+Tag and Hide & Seek are fully playable through the engine with no AI.
 
-**Pure.** No `Date.now()`, no `Math.random()`, no I/O, and no import from `@touchgrass/ai`. The clock
-arrives in `EngineContext`; randomness comes from a seed stored on the session. A test asserts
-`reduce` never mutates the state it was given.
+## Modules
 
-**Replayable.** `replay()` re-runs a command list from scratch, and a test asserts two replays produce
-byte-identical state. This is what lets a future persistence layer store commands instead of
-snapshots, and lets a disputed call be settled by re-running the log.
+| Module              | Contains                                                                   |
+| ------------------- | -------------------------------------------------------------------------- |
+| `state.ts`          | `GameState`, `PlayerState`, history, timer, the lifecycle transition table |
+| `actions.ts`        | `PlayerAction` union and `parsePlayerAction`                               |
+| `events.ts`         | `GameEvent` union (thirteen kinds) and `parseGameEvent`                    |
+| `modifiers.ts`      | `ActiveModifier` and `ActiveObjective`                                     |
+| `validate.ts`       | `validatePlayerAction`, `validateGameEvent` — checks only, no state change |
+| `process-action.ts` | Valid action → the events it causes; readiness and game start              |
+| `apply-event.ts`    | Event application: where scores, roles in play and status change           |
+| `scoring.ts`        | Points that follow from an event, from the game definition                 |
+| `win-conditions.ts` | `evaluateWinners`                                                          |
+| `time.ts`           | `advanceTime`: round expiry, next round, game end, expiry of modifiers     |
+| `reduce.ts`         | Host commands: create, join, leave, phase, pause, resume, abort            |
+| `engine.ts`         | `step`, `replay`, `submitGameEvent`, `contextAt`                           |
+| `roles.ts`          | Seeded role assignment at start                                            |
+| `errors.ts`         | `EngineError` and its codes                                                |
 
-**Fails closed, as a value.** Illegal commands return a typed `EngineError` — one of nine codes —
-rather than throwing or silently no-op'ing.
+## Using it
 
-## `proposal.ts` — the AI → engine contract
+```ts
+import { fixedClock } from '@touchgrass/shared';
+import {
+  contextAt,
+  createSession,
+  processPlayerAction,
+  advanceTime,
+} from '@touchgrass/game-engine';
 
-**The engine owns the schema a model's output must satisfy.** The engine imports nothing from
-`@touchgrass/ai`, so it can be read and trusted without opening a line of AI code; the AI package's
-tests validate generated output against this schema.
+const ctx = contextAt(fixedClock(1_700_000_000_000));
+const created = createSession(
+  { type: 'CREATE_SESSION', sessionId: 'g1', gameId: 'tag', joinCode: 'GRASS7', randomSeed: 7 },
+  ctx,
+);
+```
 
-Seven event kinds in a strict discriminated union. No free-form data bag, no coordinate fields,
-length-bounded strings, bounded durations and score deltas, a required `rationale`, and at most three
-proposals per turn.
+Every entry point takes the state, an input, and a context carrying the time, and returns
+`Result<GameState, EngineError>`. The engine never reads a clock; the caller says what time it is.
 
-## Deliberate design notes
+## Properties, each pinned by tests
 
-- `ABORT_SESSION` is legal from **every** non-terminal status, including the lobby. Stopping a game is
-  never blocked by a state check.
-- `REMOVE_PLAYER` marks a player inactive rather than deleting the record, so the log stays readable
-  and a score other entries refer to is not erased.
-- Role assignment lives here, not in the model: who chases whom is a fairness decision with hard
-  constraints, not a creative one.
-
-## Not implemented yet — this is Phase 2
-
-Only session lifecycle exists. Phase 2 builds the full engine against this contract:
-
-- `PlayerAction → validation → GameEvent → state transition`; AI proposals take the same validated
-  path and never touch state directly.
-- Lifecycle: `lobby → starting → active ⇄ round_end → completed`, plus `paused` and `aborted`. All
-  seven statuses are declared in `sessionStatusSchema`; `starting` and `round_end` are unreachable
-  until rounds exist.
-- Rounds, timers, scoring, win conditions, player actions, and modifiers with deterministic
-  behaviour.
-- Tag for 2–4 players; solo games may declare a minimum of 1.
-
-`SessionState.modifiers` and the `'game-master'` log provenance exist but nothing writes them yet.
-The event kinds in `proposal.ts` are the Phase 1 set and will be revised in Phase 2.
+- **Pure.** No `Date.now()`, no `Math.random()`, no timers, no I/O, and no import from
+  `@touchgrass/ai`.
+- **Replayable.** Replaying the same inputs produces an identical state.
+- **Fails closed, as a value.** A refusal is an `EngineError` returned through `Result`, and the
+  caller's state is untouched.
+- **Stopping is never blocked.** `ABORT_SESSION` is legal from every non-terminal status.

@@ -30,7 +30,7 @@ export function assignRoles(
   if (playerIds.length > definition.maxPlayers) {
     return err(
       engineError(
-        'SESSION_FULL',
+        'PLAYER_LIMIT_EXCEEDED',
         `"${definition.name}" supports at most ${definition.maxPlayers} players; ${playerIds.length} present.`,
         { gameId: definition.id, present: playerIds.length, max: definition.maxPlayers },
       ),
@@ -51,11 +51,10 @@ export function assignRoles(
         // than an assumption, because a silent miss here would start a game with
         // nobody chasing.
         return err(
-          engineError(
-            'ROLE_CONSTRAINT_VIOLATED',
-            `Ran out of players while filling role "${role.id}".`,
-            { gameId: definition.id, roleId: role.id },
-          ),
+          engineError('INVALID_ROLE', `Ran out of players while filling role "${role.id}".`, {
+            gameId: definition.id,
+            roleId: role.id,
+          }),
         );
       }
       assignment.set(playerId, role.id);

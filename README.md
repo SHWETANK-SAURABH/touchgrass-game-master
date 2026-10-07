@@ -17,11 +17,10 @@ AI proposes  →  Zod validates  →  Safety validates  →  Engine executes  �
 The model never touches game state. That is the whole architecture in one line, and the reason the
 pieces are split the way they are.
 
-> **Status: Phase 1 — foundation.** The contracts, the model abstraction, the session-lifecycle
-> core of the engine, the game catalogue, and the hazard taxonomy are implemented and tested.
-> **Phase 2** builds the full deterministic game engine (player actions, rounds, scoring, win
-> conditions). **Phase 3** adds the Game Master (Mastra + Gemma). The safety validator, realtime
-> multiplayer, and persistence come after that. See
+> **Status: Phase 2 — deterministic game engine.** Tag and Hide & Seek are fully playable through
+> the engine with no AI: lifecycle, rounds, timer, player actions, game events, scoring and winners
+> are implemented and tested. **Not built yet:** the Game Master (Mastra + Gemma — Phase 3), the
+> safety validator, realtime multiplayer, persistence, and any game UI. See
 > [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---
@@ -97,7 +96,7 @@ apps/
 packages/
   shared/                 Result, seeded RNG, clock, ids, logger, env schema
   game-definitions/       GameDefinition schema + the five games, as data
-  game-engine/            Session state, the AI→engine contract, pure reducer
+  game-engine/            Deterministic engine: actions, events, time, scoring, winners
   safety/                 Hazard taxonomy, policy derivation, verdict contract
   ai/                     ModelProvider port, two adapters, structured generation
 ```
@@ -114,8 +113,8 @@ Imports between workspaces, as they are in the code today (no cycles):
 | `apps/web`         | `ai`, `game-definitions`, `safety`, `shared` |
 
 The engine imports nothing from `ai` or `safety`, so it can be read, tested, and trusted without
-opening a line of AI code. The proposal schema the model must satisfy lives in the engine; the AI
-package's tests validate generated output against it.
+opening a line of AI code. The game event schema a model's output must satisfy lives in the engine;
+the AI package's tests validate generated output against it.
 
 There is deliberately **no `realtime/` or `database/` package yet.** An empty package that exists to
 make a diagram look complete is worse than an honest gap — those arrive in a later phase, with the
@@ -125,11 +124,12 @@ code that needs them.
 
 ## Documentation
 
-| Document                             | Covers                                                                       |
-| ------------------------------------ | ---------------------------------------------------------------------------- |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | System design, every layer, local and production topology, roadmap           |
-| [AI.md](./AI.md)                     | What "agent" means here, structured output, why the LLM is not the engine    |
-| [SAFETY.md](./SAFETY.md)             | The hazard taxonomy, the validator design, what the AI is never trusted with |
+| Document                                                | Covers                                                                       |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md)                    | System design, every layer, local and production topology, roadmap           |
+| [AI.md](./AI.md)                                        | What "agent" means here, structured output, why the LLM is not the engine    |
+| [GAME_ENGINE.md](./packages/game-engine/GAME_ENGINE.md) | Actions, events, state, lifecycle, validation, determinism                   |
+| [SAFETY.md](./SAFETY.md)                                | The hazard taxonomy, the validator design, what the AI is never trusted with |
 
 Each package also has its own README describing its boundary.
 

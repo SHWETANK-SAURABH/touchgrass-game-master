@@ -82,7 +82,7 @@ export default function HomePage() {
 
       <section className="grid gap-4 sm:grid-cols-3">
         <Stat value={String(games.length)} label="games defined as data" />
-        <Stat value={String(GAME_EVENT_KINDS.length)} label="event kinds the model may propose" />
+        <Stat value={String(GAME_EVENT_KINDS.length)} label="event kinds in the engine contract" />
         <Stat value={String(HAZARD_CATEGORIES.length)} label="hazard categories catalogued" />
       </section>
 
