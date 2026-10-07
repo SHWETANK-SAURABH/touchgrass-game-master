@@ -3,8 +3,10 @@
 > **Status: Phase 3A — local Game Master.** A Game Master exists: one Mastra agent, running Gemma
 > through a local Ollama, that reads a game and returns a structured proposal. **That is where it
 > stops.** Nothing in the codebase sends a proposal to the game engine, and there is no safety
-> validator. It has been tested against a scripted stand-in for the model; a real Gemma call is a
-> separate manual test (`npm run ai:live`).
+> validator. The normal tests use a scripted stand-in for the model. The separate manual live test
+> (`npm run ai:live`) has passed against the real local `gemma3:4b` model: 16/16 checks, with
+> default settings in the final run. Every structured proposal was schema-valid, no forbidden or
+> engine-only event kind was produced, and the repair loop was not needed.
 
 ---
 
@@ -417,7 +419,6 @@ Not built, in the order the pipeline needs them:
 
 | Piece                                   | Notes                                                               |
 | --------------------------------------- | ------------------------------------------------------------------- |
-| A real Gemma run                        | `npm run ai:live` exists; the result has not been recorded here     |
 | Safety validation of a proposal         | Specified in [SAFETY.md](./SAFETY.md); taxonomy and contracts exist |
 | Passing a proposal to the engine        | Through `submitGameEvent`, which validates it against the game      |
 | When to ask the Game Master             | Nothing calls `propose` yet; there is no trigger or schedule        |
