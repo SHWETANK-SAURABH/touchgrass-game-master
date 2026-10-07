@@ -39,6 +39,9 @@ export {
   type PlayerCompletedChallengeAction,
   type PlayerAcceptedEventAction,
   parsePlayerAction,
+  playerIntentSchema,
+  type PlayerIntent,
+  parsePlayerIntent,
 } from './actions';
 
 export {
@@ -94,10 +97,13 @@ export { evaluateWinners } from './win-conditions';
 // `applyEvent`, `awardsForEvent` and `applyAwards` are deliberately not exported.
 // They apply an event or add points without the checks on where it came from, so
 // the only way for a caller outside this package to change gameplay state is
-// through `processPlayerAction`, `submitGameEvent`, `reduce` and `advanceTime`.
+// through `processPlayerAction` (or `submitPlayerAction`), `submitGameEvent`,
+// `reduce` and `advanceTime`.
 export type { EngineContext } from './apply-event';
 
 export { eventsForAction, processPlayerAction } from './process-action';
+
+export { type PlayerActionOutcome, submitPlayerAction } from './submit-action';
 
 export { advanceTime } from './time';
 

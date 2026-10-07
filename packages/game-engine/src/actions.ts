@@ -114,3 +114,38 @@ export function parsePlayerAction(input: unknown): Result<PlayerAction, EngineEr
     }),
   );
 }
+
+// --- intents ------------------------------------------------------------------
+
+/**
+ * A player intent is what a client is allowed to send: an action with no actor.
+ *
+ * A PlayerAction names the player who is acting. If a client supplied that
+ * field, any client could act as any player by typing a different id. So a
+ * client message has no `playerId` at all, and because every schema here is
+ * strict, a message that includes one is refused rather than ignored. Whoever
+ * holds the connection knows which player it belongs to and passes that id
+ * separately; `submitPlayerAction` joins the two.
+ *
+ * One schema per action kind, with the same payload fields as the action.
+ */
+export const playerIntentSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('PLAYER_READY') }).strict(),
+  z.object({ type: z.literal('PLAYER_TAGGED'), targetPlayerId: id }).strict(),
+  z.object({ type: z.literal('PLAYER_FOUND'), targetPlayerId: id }).strict(),
+  z.object({ type: z.literal('PLAYER_ACTIVATED_POWER'), powerId: id }).strict(),
+  z.object({ type: z.literal('PLAYER_COMPLETED_CHALLENGE'), challengeId: id }).strict(),
+  z.object({ type: z.literal('PLAYER_ACCEPTED_EVENT'), eventId: id }).strict(),
+]);
+export type PlayerIntent = z.infer<typeof playerIntentSchema>;
+
+/** Schema validation for a message from a client. */
+export function parsePlayerIntent(input: unknown): Result<PlayerIntent, EngineError> {
+  const parsed = playerIntentSchema.safeParse(input);
+  if (parsed.success) return ok(parsed.data);
+  return err(
+    engineError('INVALID_ACTION', 'The message is not a valid player intent.', {
+      issues: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+    }),
+  );
+}

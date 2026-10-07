@@ -17,14 +17,26 @@ AI proposes  →  Zod checks shape  →  Engine checks legality  →  Safety che
 The model never touches game state. That is the whole architecture in one line, and the reason the
 pieces are split the way they are.
 
+Players reach the same engine by a separate route, with no model involved:
+
+```
+Client  →  PlayerAction  →  deterministic engine  →  GameEvent  →  GameState
+```
+
+AI proposals and player actions are two separate inputs to the deterministic engine.
+
 > **Status: Phase 4 — safety validator.** Tag and Hide & Seek are fully playable through the
 > deterministic engine with no AI. A Game Master — a Mastra agent running Gemma through a local
 > Ollama — reads a game and returns a structured event proposal. A proposal can be handed off: the
 > engine checks that it is legal, a deterministic safety validator checks it against the game's
 > safety policy, and the engine applies it only if both pass. The safety validator is a fixed set of
-> rules, not a guarantee that play is safe — see [SAFETY.md](./SAFETY.md). **Not built yet:**
-> anything in the app that calls the Game Master, realtime multiplayer, persistence, and a game UI.
-> See [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
+> rules, not a guarantee that play is safe — see [SAFETY.md](./SAFETY.md).
+>
+> Phase 5A establishes the deterministic multiplayer command boundary. Transport is implemented
+> later. A client message says what a player did and never who; the engine is given the actor
+> separately and decides what the action means. **Not built yet:** realtime multiplayer (no
+> WebSockets, no connections, no broadcast), anything in the app that calls the Game Master,
+> persistence, and a game UI. See [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---
 

@@ -1,8 +1,11 @@
 # Game engine
 
-> **Status: Phase 2B — deterministic execution.** Tag and Hide & Seek are fully playable through the
-> engine with no AI: lifecycle, rounds, timer, actions, events, scoring and winners are implemented
-> and tested. The other three games have valid definitions but no rules or scoring.
+> **Status.** Tag and Hide & Seek are fully playable through the engine with no AI: lifecycle,
+> rounds, timer, actions, events, scoring and winners are implemented and tested. The other three
+> games have valid definitions but no rules or scoring.
+>
+> **Phase 5A establishes the deterministic multiplayer command boundary. Transport is implemented
+> later.** There is no WebSocket server, no connection handling and no broadcast; see §6.
 
 The engine is the only part of TouchGrass that can change a game. It has no dependency on a model,
 a database, or a network, and it produces the same result on every machine.
@@ -13,6 +16,8 @@ a database, or a network, and it produces the same result on every machine.
 
 ```mermaid
 flowchart TD
+    CL["Client message<br/>an intent: what, never who"] --> SA["submitPlayerAction<br/>actor supplied by the caller"]
+    SA --> PA
     PA["PlayerAction<br/>a player reports something"] --> AV["Action validation<br/>parsePlayerAction, validatePlayerAction"]
     AV --> AP["Action processing<br/>eventsForAction"]
     AP --> GE["GameEvent(s)"]
@@ -45,6 +50,7 @@ flowchart TD
 | Host commands     | `reduce.ts`          | Join, leave, pause, resume, abort                                                         |
 | External events   | `external-events.ts` | `validateExternalEvent`, `applyValidatedEvent`: the trust boundary for outside events     |
 | Entry points      | `engine.ts`          | `step`, `replay`, `submitGameEvent`, `contextAt`                                          |
+| Command boundary  | `submit-action.ts`   | `submitPlayerAction`: a client intent plus the actor the caller resolved for it           |
 
 **An action is intent; an event is a fact.** No action schema has a score, role, or status field,
 and every schema is strict, so a client has nowhere to put a state change.
@@ -168,9 +174,143 @@ with outcome `SWAP_ROLES` produces a `ROLE_CHANGE`, one with `TARGET_OUT` produc
 The engine cannot see the field. It does not check that a tag physically happened; it checks that
 the report is one the rules allow from that player at that moment.
 
+**What each action needs.** "Present" means in the game and not left; "playing" means present and
+not out for the round.
+
+| Action                       | Game status | Actor   | Also required                                                                    |
+| ---------------------------- | ----------- | ------- | -------------------------------------------------------------------------------- |
+| `PLAYER_READY`               | `lobby`     | present | —                                                                                |
+| `PLAYER_TAGGED`              | `active`    | playing | Target is playing; a rule lets the actor's role tag the target's; no live shield |
+| `PLAYER_FOUND`               | `active`    | playing | Target is playing; a rule lets the actor's role find the target's                |
+| `PLAYER_ACTIVATED_POWER`     | `active`    | playing | The actor holds the power                                                        |
+| `PLAYER_COMPLETED_CHALLENGE` | `active`    | playing | The objective is active, the actor is eligible and has not already completed it  |
+| `PLAYER_ACCEPTED_EVENT`      | `active`    | playing | `eventId` is an event entry in this game's history                               |
+
+Every action must also be one the game definition lists, and nothing is accepted once a game has
+ended or while it is paused.
+
 ---
 
-## 6. Game events
+## 6. The multiplayer command boundary
+
+> Phase 5A establishes the deterministic multiplayer command boundary. Transport is implemented
+> later.
+
+```
+Client
+  ↓  intent (what, never who)        + actor id, supplied by the caller
+PlayerAction
+  ↓  action validation
+deterministic action processing
+  ↓
+GameEvent(s)
+  ↓  event validation
+event application
+  ↓
+GameState
+```
+
+```ts
+submitPlayerAction(state, actorId, intent, ctx): Result<PlayerActionOutcome, EngineError>
+
+interface PlayerActionOutcome {
+  state: GameState; // the state to continue with
+  action: PlayerAction; // the action as recorded, with the actor filled in
+  entries: HistoryEntry[]; // what this step added to the history, in order
+}
+```
+
+**The actor is not in the message.** A `PlayerAction` names its actor in `playerId`. If a client
+supplied that field, any client could act as any player. So a client sends a **player intent**: the
+same payload as the action, with no `playerId`. The intent schemas are strict, so a message that
+includes a `playerId` — or a score, a role, a status, or anything else — is refused, not ignored. The
+caller passes the actor separately, and `submitPlayerAction` is the only place the two are joined.
+
+**This is domain authorisation, not authentication.** The engine checks that the actor is a player
+in this game who may do this now. It does not know how the caller decided which player a client is;
+there are no accounts, tokens or sessions, and nothing about a connection is stored in `GameState`.
+A realtime server added later owns that association and passes the player id it resolved. The
+transport supplies actor identity; the client does not.
+
+**`PlayerIntent` is untrusted input; `PlayerAction` is the domain action.** An intent comes from
+outside and has no actor. An action contains its actor and is what the engine records in history and
+what `replay` reads back. `processPlayerAction` and `step` take a `PlayerAction`, actor included, so
+they are for replaying recorded actions and for code that already holds an authoritative action.
+They must not be handed a client's message: that is what `submitPlayerAction` is for.
+
+**Host commands are not part of this boundary.** Joining, leaving, pausing, resuming and aborting
+are host commands handled by `reduce`. No intent can express one, and `submitPlayerAction` refuses a
+message that tries. A command names no actor and `GameState` records no host, so the engine cannot
+tell who issued one. Before any command is reachable from a client it needs its own authorised
+boundary, which does not exist yet and is not designed here.
+
+**It is the same engine path.** `submitPlayerAction` builds the action and calls
+`processPlayerAction`, so the result is identical to processing that action directly. An action
+never becomes an event without `validateGameEvent`, and no function accepts a partial state.
+
+**A refusal changes nothing.** The caller's state is left exactly as it was: no
+entry is recorded, no event applied, no point awarded, no role or power changed, and no time
+advanced, including a round that had run out by the time the refused message arrived.
+
+**The entries are what a caller would announce.** `entries` holds the history entries the step
+added: any round that ended because time had passed, the action, the events it caused and their
+awards. Each carries its `sequence`, which is its position in the game with no gaps.
+
+### One state, one input at a time
+
+A game has one authoritative state. The engine is a pure function, so it does not hold that state
+and cannot serialise access to it; whoever holds it must give the engine one input at a time and keep
+the state that comes back.
+
+- Two messages that arrive together are processed one after the other. The second is judged against
+  the state the first produced, and is refused by the ordinary rules if it is no longer legal: a
+  tagger's second tag is refused because they are now a runner, and a second report of the same find
+  is refused because the hider is already out.
+- The order the holder chooses can decide the outcome. A shield raised just before a tag blocks it;
+  raised just after, it does not undo it. The engine does not rank simultaneous messages.
+- Calling the engine twice with the same state gives two separate results. Both claim the same
+  history positions. A holder must keep only one of them.
+
+**No revision field was added.** History is append-only and numbered without gaps, so within the
+one line of states a holder keeps, `state.history.length` gives a state's position, and a store that
+later needs compare-and-set can use it. It does not tell two diverged copies apart: both results of
+the double call above have the same length. The engine never needs to, because it works on whatever
+single state it is given; not forking that state is the holder's job. Clients are not asked to send
+the revision they last saw: an action is valid or not against the current game, and refusing a tag
+because an unrelated event arrived first would be worse than judging it by the rules. If a transport
+wants to drop messages that are too old, it can do that before calling the engine.
+
+**Duplicate delivery is a transport concern and is not handled here.** There is no message id, and
+the engine does not recognise the same message arriving twice. The rules give some protection and
+no guarantee:
+
+- Usually the first message changes who may act, so the second is refused: a repeated tag, find,
+  power activation or objective completion.
+- A late duplicate can be legal again. If a tag is followed by a tag back, a second copy of the
+  first tag is a valid new tag and scores.
+- `PLAYER_READY` in the lobby and `PLAYER_ACCEPTED_EVENT` are recorded each time they arrive, adding
+  a history entry and changing nothing else.
+
+Recognising duplicates, and limiting how often a client may send, belong to the layer that receives
+messages and holds the state.
+
+### Two separate inputs
+
+Player actions and AI proposals are two separate inputs to the deterministic engine.
+
+```
+PlayerAction → engine
+
+GameState → Game Master → proposal → schema → domain validation → safety → engine
+```
+
+Processing a player action never calls a model. The Game Master is asked for a proposal only when a
+caller asks, and that proposal reaches the engine through its own validation and the safety
+validator. Neither path can apply anything the engine has not validated.
+
+---
+
+## 7. Game events
 
 **The ten kinds of the project brief:**
 
@@ -271,7 +411,7 @@ does not block any action. A test pins this.
 
 ---
 
-## 7. Tag
+## 8. Tag
 
 | Rule    | Value                                                               |
 | ------- | ------------------------------------------------------------------- |
@@ -295,7 +435,7 @@ does not block any action. A test pins this.
 
 ---
 
-## 8. Hide & Seek
+## 9. Hide & Seek
 
 | Rule    | Value                                                                               |
 | ------- | ----------------------------------------------------------------------------------- |
@@ -314,7 +454,7 @@ does not block any action. A test pins this.
 
 ---
 
-## 9. Scoring
+## 10. Scoring
 
 Scoring is data in the game definition (`scoring: [{ trigger, points }]`). The engine adds points
 when it applies the event that earns them, and writes each award — player, reason, points — onto
@@ -334,7 +474,7 @@ a score never goes down and never becomes negative. Nothing outside the engine c
 
 ---
 
-## 10. Win conditions
+## 11. Win conditions
 
 `HIGHEST_SCORE` is the only win condition. It is evaluated when `GAME_END` is applied, and the
 result is stored in `winnerIds`.
@@ -344,7 +484,7 @@ joined. Players who left the game cannot win. An aborted game has no winners.
 
 ---
 
-## 11. Validation and errors
+## 12. Validation and errors
 
 **Schema validation (Zod)** answers "is it well formed": `parsePlayerAction`, `parseGameEvent`,
 `gameStateSchema`, `gameDefinitionSchema`.
@@ -375,7 +515,7 @@ untouched.
 
 ---
 
-## 12. Why AI cannot change state directly
+## 13. Why AI cannot change state directly
 
 A model's output varies between runs, cannot be relied on to respect limits, and cannot be audited
 after the fact. So no model writes to `GameState`, and the engine is built so that it could not:
@@ -396,7 +536,7 @@ the hand-off module in `packages/ai` (see [AI.md](../../AI.md)).
 
 ---
 
-## 13. Why the engine is deterministic
+## 14. Why the engine is deterministic
 
 - Every entry point is a pure function of the state, the input, and the context.
 - The clock value comes in through `EngineContext`; nothing calls `Date.now()`, and there are no
@@ -413,7 +553,7 @@ state is schema-valid, scores never fall, and role limits hold.
 
 ---
 
-## 14. Known limits
+## 15. Known limits
 
 1. **Tag-backs are allowed.** Two players can tag each other back and forth for +2 each time. No
    cooldown or "no tag-back" rule was specified, so none exists.
@@ -426,3 +566,8 @@ state is schema-valid, scores never fall, and role limits hold.
    its single round on the timer and every player ties on 0, or on objective points where the game
    allows objectives.
 7. **`ADVANCE_PHASE`** still exists as a host command and is independent of rounds.
+8. **Host commands have no actor.** `reduce` does not say who issued a pause, an abort or a removal,
+   and `GameState` records no host, so the engine cannot check that a command came from one.
+   Whatever calls `reduce` is trusted to have decided that.
+9. **A message delivered twice is not deduplicated**, and nothing limits how often a client may
+   send (see §6).

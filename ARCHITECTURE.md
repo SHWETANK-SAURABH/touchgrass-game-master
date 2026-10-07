@@ -182,12 +182,14 @@ PlayerAction → validation → action processing → GameEvent(s) → event app
 
 Tag and Hide & Seek are fully playable through it with no AI.
 
-**Four inputs, each a pure function of (state, input, supplied time):**
+**Four inputs, each a pure function of (state, input, supplied time).** A client intent is the
+form in which a player action arrives from a client:
 
 | Input          | Entry point                                     | Notes                                                                                         |
 | -------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Host command   | `reduce`                                        | Join, leave, pause, resume, abort                                                             |
 | Player action  | `processPlayerAction`                           | A report of intent; turned into events by the game's rules                                    |
+| Client intent  | `submitPlayerAction`                            | An action without an actor, plus the actor the caller resolved; then the same path as above   |
 | External event | `validateExternalEvent` → `applyValidatedEvent` | Host or Game Master proposal; optional kinds only; must be validated before it can be applied |
 | Time           | `advanceTime`                                   | Ends rounds and the game when they are due                                                    |
 
@@ -252,7 +254,8 @@ order give the same roles on any host.
 | Ice & Fire, Treasure Hunt, Nature Challenge rules | Not designed; definitions are valid but have no rules or scoring |
 | Game Master, Mastra, Gemma                        | Phase 3                                                          |
 | Safety validator                                  | Phase 4, in `packages/safety`; the engine does not depend on it  |
-| Realtime, persistence                             | Later                                                            |
+| Multiplayer command boundary                      | Phase 5A: `submitPlayerAction`, actor supplied by the caller     |
+| Realtime transport, persistence                   | Later                                                            |
 
 ---
 
@@ -310,9 +313,40 @@ not a guarantee. [SAFETY.md](./SAFETY.md) lists what it cannot do.
 
 ## 7. Realtime architecture
 
-> **Planned — later phase.** Nothing realtime exists today, and there is no placeholder package.
+> **Phase 5A establishes the deterministic multiplayer command boundary. Transport is implemented
+> later.** No WebSocket server, connection handling, broadcast, Redis or realtime package exists.
 
-The intended shape, and the constraint it has to respect:
+What exists is the function a transport will call:
+
+```
+Client
+  ↓  intent (what, never who)        + actor id, resolved by the transport
+PlayerAction
+  ↓
+deterministic engine
+  ↓
+GameEvent
+  ↓
+GameState                            + the history entries that were added
+```
+
+`submitPlayerAction(state, actorId, intent, ctx)` takes the client's message and the acting player
+as two separate arguments. The message cannot name its actor, so a client cannot act as someone
+else by editing its payload. The engine checks that the actor is a player in the game who may do
+this now; deciding which player a connection belongs to is the transport's job and is not built.
+See [GAME_ENGINE.md §6](./packages/game-engine/GAME_ENGINE.md).
+
+**AI proposals and player actions are two separate inputs to the deterministic engine.** A player
+action goes straight to the engine and never calls a model. A Game Master proposal goes through the
+schema, the engine's legality check and the safety validator first. Nothing connects the two: a
+player action does not trigger a Game Master turn.
+
+**One authoritative state per game.** The engine is pure and holds nothing. The future holder of a
+game's state must feed it one input at a time and keep what comes back; a second message that
+arrived at the same moment is judged against the updated state and refused if it is no longer legal.
+No lock, queue or revision field exists yet, and none is needed until there is a transport.
+
+The intended shape of the transport, not yet built, and the constraint it has to respect:
 
 ```mermaid
 flowchart TD
@@ -329,8 +363,15 @@ flowchart TD
 
 Decisions already fixed by the engine design:
 
-- **Clients send player actions and host commands, never state.** Those two unions are the only
-  vocabulary a client may use, and the server re-validates every one with Zod regardless of origin.
+- **Clients send player intents, never state and never their own identity.** The transport
+  supplies actor identity; the client does not. The server re-validates every message with Zod
+  regardless of origin.
+- **Host commands are a separate boundary that does not exist yet.** Join, leave, pause, resume and
+  abort go through `reduce`, which names no actor, and `GameState` records no host. They are not
+  reachable through the player-action boundary, and exposing them to clients needs its own
+  authorisation first.
+- **Duplicate delivery and rate limiting belong to the transport.** The engine has no message id
+  and does not recognise a repeated message.
 - **Redis holds hot state; it is not the system of record.** The input log is. A lost Redis key
   costs a replay, not a session.
 - **Broadcast is the last step, not a side effect.** The engine returns new state; the transport
@@ -526,13 +567,14 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                         | Status       |
-| ------- | ------------------------------------------------------------------------------------------------------------- | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                  | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable   | **Complete** |
-| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)   | **Complete** |
-| Phase 4 | Deterministic safety validator between domain validation and the engine                                       | **Complete** |
-| Later   | Calling the Game Master during a game, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment | Planned      |
+| Phase   | Scope                                                                                                                   | Status       |
+| ------- | ----------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                            | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable             | **Complete** |
+| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)             | **Complete** |
+| Phase 4 | Deterministic safety validator between domain validation and the engine                                                 | **Complete** |
+| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                             | **Complete** |
+| Later   | Realtime transport (WebSockets + Redis), calling the Game Master during a game, MongoDB persistence, Sentry, deployment | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.
