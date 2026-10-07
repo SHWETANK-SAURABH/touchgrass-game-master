@@ -1,0 +1,1 @@
+# Static assets served from the site root. Kept so the Docker build has a path to copy.

@@ -1,0 +1,69 @@
+# Local AI runtime for TouchGrass.
+#
+# This file deliberately does NOT containerise the web app: `npm run dev` with
+# hot reload is a better development loop than a rebuilt image. What it does
+# provide is a reproducible open-weight model runtime, so every contributor runs
+# the same Gemma weights behind the same HTTP contract the production GPU host
+# will expose.
+#
+#   npm run ai:up     start the daemon
+#   npm run ai:pull   download MODEL_NAME into the daemon's volume
+#   npm run ai:down   stop
+#
+# GPU users: `docker compose --profile gpu up -d ollama-gpu` instead of ai:up.
+
+name: touchgrass
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: touchgrass-ollama
+    ports:
+      - '11434:11434'
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      # Keep a model resident between Game Master turns; a cold load would blow
+      # past the request timeout mid-game.
+      OLLAMA_KEEP_ALIVE: '30m'
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'ollama', 'list']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # Same daemon, with host GPUs attached. Opt in via `--profile gpu`.
+  ollama-gpu:
+    extends:
+      service: ollama
+    container_name: touchgrass-ollama-gpu
+    profiles: ['gpu']
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ['gpu']
+
+  # One-shot: pulls the model named in .env into the shared volume, then exits.
+  model-init:
+    image: ollama/ollama:latest
+    container_name: touchgrass-model-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      OLLAMA_HOST: 'http://ollama:11434'
+      MODEL_NAME: '${MODEL_NAME:-gemma3:4b}'
+    entrypoint: ['/bin/sh', '-c']
+    command: ['echo "Pulling $${MODEL_NAME}..." && ollama pull "$${MODEL_NAME}"']
+    restart: 'no'
+
+volumes:
+  ollama-models:
+    name: touchgrass-ollama-models

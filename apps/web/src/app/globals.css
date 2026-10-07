@@ -1,0 +1,47 @@
+@import 'tailwindcss';
+
+/*
+ * A deliberately outdoor palette: moss, bark, and low sun. The product is about
+ * getting people off a screen, so the interface aims to be glanceable in daylight
+ * rather than immersive — high contrast, large type, no decoration that needs
+ * attention.
+ */
+@theme {
+  --color-moss-50: #f3f8ef;
+  --color-moss-100: #e3f0da;
+  --color-moss-200: #c7e1b6;
+  --color-moss-300: #a2cc8a;
+  --color-moss-400: #7bb35f;
+  --color-moss-500: #5b9641;
+  --color-moss-600: #447731;
+  --color-moss-700: #365e29;
+  --color-moss-800: #2c4a24;
+  --color-moss-900: #1d3119;
+
+  --color-bark-700: #4a3f35;
+  --color-bark-800: #332c25;
+  --color-bark-900: #1f1a16;
+
+  --color-sun-400: #f2b544;
+  --color-sun-500: #e09a1f;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Code', Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  background-color: var(--color-moss-50);
+  color: var(--color-bark-900);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: var(--color-bark-900);
+    color: var(--color-moss-100);
+  }
+}
