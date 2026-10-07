@@ -49,6 +49,29 @@ The adapters are tested with `vi.stubGlobal('fetch')`; the repair loop uses a sc
 declared inside the test file. CI needs no model. There is **no fake provider in `src`** — a test
 double is not a shipped integration.
 
+## The Game Master
+
+`@touchgrass/ai/game-master` — one Mastra agent with no tools. See [AI.md](../../AI.md).
+
+```ts
+import { createGameMasterFromEnv } from '@touchgrass/ai/game-master';
+
+const gameMaster = createGameMasterFromEnv(getServerEnv());
+const result = await gameMaster.propose({ state, definition, now });
+// result.value.proposal → { rationale, event | null }
+```
+
+It returns a proposal and does nothing else: it has no access to the engine's entry points, and
+nothing in this package applies a proposal. If the model runtime is unreachable or the model has not
+been pulled, `propose` returns `MODEL_UNAVAILABLE`; it never falls back to another model.
+
+The agent's model is `createProviderLanguageModel(provider)`, an adapter over `ModelProvider`, so
+the runtime is still selected by `MODEL_PROVIDER`, `MODEL_NAME` and `MODEL_BASE_URL` alone.
+
+`npm run ai:live` runs `game-master.live.ts`, a manual test that makes a real call to the configured
+model. It is not part of `npm test`.
+
 ## Not implemented yet
 
-The Game Master agent (`src/agent/`) and its Mastra integration. Phase 3.
+Safety validation of a proposal, passing a proposal to the game engine, and anything that decides
+when to ask the Game Master.

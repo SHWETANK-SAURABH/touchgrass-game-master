@@ -71,6 +71,10 @@ export {
   type PlayerOutEvent,
   type PowerActivatedEvent,
   type ObjectiveCompletedEvent,
+  EXTERNAL_EVENT_SCHEMAS,
+  externalGameEventSchema,
+  externalRoleChangeEventSchema,
+  type ExternalGameEvent,
   parseGameEvent,
 } from './events';
 

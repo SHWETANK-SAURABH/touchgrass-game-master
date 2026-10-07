@@ -1,31 +1,50 @@
 # AI Architecture
 
-> **Phase 1 status.** The contract, the provider abstraction, and the structured-generation pipeline
-> with its repair loop are implemented and tested. The Game Master agent is **not** implemented — it
-> is Phase 3; Phase 2 is the deterministic game engine, which involves no AI. This document describes the intended design and marks precisely which parts exist.
+> **Status: Phase 3A — local Game Master.** A Game Master exists: one Mastra agent, running Gemma
+> through a local Ollama, that reads a game and returns a structured proposal. **That is where it
+> stops.** Nothing in the codebase sends a proposal to the game engine, and there is no safety
+> validator. It has been tested against a scripted stand-in for the model; a real Gemma call is a
+> separate manual test (`npm run ai:live`).
+
+---
+
+## Who does what
+
+| Role                 | What it is                                                                       | State                                             |
+| -------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Claude / Codex       | Development assistants used to write this code. Not part of the running product. | —                                                 |
+| **Gemma**            | The runtime model, served locally by Ollama                                      | Integrated                                        |
+| **Game Master**      | **Proposes** at most one game event, with a reason                               | Implemented (Phase 3A)                            |
+| **Safety validator** | **Validates** a proposal against the hazard taxonomy                             | Not implemented                                   |
+| **Game engine**      | **Executes** validated events, deterministically                                 | Implemented; not yet connected to the Game Master |
 
 ---
 
 ## The pipeline
 
 ```
-Game State
+GameState + GameDefinition
     ↓
-Game Master Agent          ← planned, Phase 3
+Game Master (Mastra agent)     ← implemented
     ↓
-Gemma (open weights)       ← implemented: ModelProvider port + two adapters
+Gemma via Ollama               ← implemented: ModelProvider + adapter
     ↓
-Structured GameEvent       ← implemented: gameEventSchema
+structured proposal            ← implemented: { rationale, event | null }
     ↓
-Zod validation             ← implemented: generateStructured() + repair loop
+schema validation              ← implemented: the engine's external-event schemas
     ↓
-Safety validation          ← planned, later phase (taxonomy + contracts implemented)
+returned to the caller         ← Phase 3A ends here
+    ·
+    ·   not built:
     ↓
-Game Engine                ← implemented: deterministic, no AI (Phase 2)
+Safety validation              ← planned (taxonomy and contracts exist)
+    ↓
+Game engine (submitGameEvent)  ← exists, but nothing passes a proposal to it yet
 ```
 
-Every arrow narrows what is possible. By the time anything reaches the engine it has been constrained
-by a grammar, parsed by a schema, and judged by deterministic rules.
+Every arrow narrows what is possible. A proposal has been constrained by a grammar and parsed by a
+schema before it is returned; it has **not** been judged safe, and it has **not** been checked
+against the current state of the game. Those are the next two steps and neither exists yet.
 
 ---
 
@@ -33,8 +52,7 @@ by a grammar, parsed by a schema, and judged by deterministic rules.
 
 The word is used narrowly. A TouchGrass agent is:
 
-> a component that observes game state, decides whether to act, and emits a **structured proposal**
-> into a validation pipeline.
+> a component that observes game state, decides whether to act, and returns a **structured proposal**.
 
 It explicitly is **not**:
 
@@ -43,30 +61,99 @@ It explicitly is **not**:
 - a thing in a loop with itself
 - a conversational partner
 
-The Game Master gets one job per turn: look at the session and propose between one and three events.
-It cannot query a database, call an API, remember anything beyond what the prompt contains, or apply
-its own output. Those capabilities would each add a failure mode, and none of them improve the twist
-it writes.
+The Game Master has one capability: `propose(context)`. It looks at a game and returns at most one
+event, or decides that nothing should happen. It cannot query a database, call an API, remember
+anything between calls, or apply its own output.
 
-### The agent's actual inputs
+### The Game Master, as built
 
 ```mermaid
 flowchart LR
-    subgraph Observation
-        A["Session state<br/>status, phase, roles,<br/>scores, recent log"]
-        B["Game definition<br/>allowedEventKinds,<br/>modifierThemes"]
-        C["Game Master guidance<br/>persona, encourage,<br/>avoid, exampleTwists"]
+    subgraph Input["GameMasterContext (typed)"]
+        A["GameState"]
+        B["GameDefinition"]
+        C["now"]
     end
-    Observation --> P["Prompt assembly<br/><i>Phase 3</i>"]
-    P --> G["generateStructured()<br/><b>implemented</b>"]
-    G --> T["GameMasterTurn<br/>1–3 proposals"]
-    T --> V["→ safety → engine"]
+    Input --> V["buildGameMasterView<br/>a read-only description"]
+    V --> P["Prompt<br/>system prompt + game data + allowed shapes"]
+    P --> AG["Mastra Agent<br/>no tools, one step"]
+    AG --> AD["Model adapter"]
+    AD --> MP["ModelProvider"]
+    MP --> O["Ollama → Gemma"]
+    AG --> PR["parseGameMasterProposal"]
+    PR -- invalid --> RP["Repair prompt<br/>bounded"]
+    RP --> AG
+    PR -- valid --> OUT["Result: proposal, or a typed error"]
 ```
 
-Note where the Game Master's personality lives: in `packages/game-definitions`, beside the rules, not
-inside the agent. Each game ships its own `persona`, its own list of things to `encourage`, its own
-list of things to `avoid`, and hand-written `exampleTwists` for few-shot prompting. Adding a game adds
-a voice; it does not touch agent code.
+| File (`packages/ai/src/game-master/`) | Responsibility                                                |
+| ------------------------------------- | ------------------------------------------------------------- |
+| `game-master.ts`                      | `createGameMaster`, `propose`, the repair loop, typed errors  |
+| `context.ts`                          | `GameMasterContext` and the read-only view shown to the model |
+| `prompt.ts`                           | The system prompt and the message builders                    |
+| `proposal.ts`                         | The proposal schema and its validation                        |
+| `model-adapter.ts`                    | Presents a `ModelProvider` to Mastra as a language model      |
+
+It is imported from `@touchgrass/ai/game-master`, a separate entry point, so code that only needs a
+model provider does not load the agent framework.
+
+**What the model is shown.** Not the state object: a description derived from it — the round and
+seconds remaining, each present player's role, score and status, what is in force, the last ten
+history entries, the event kinds, modifiers and powers this game allows, the validation limits, and
+the game's `persona` and `avoid` list.
+
+**What it returns.**
+
+```ts
+{ rationale: string, event: ExternalGameEvent | null }
+```
+
+`event` uses the engine's own schemas for events that may come from outside it
+(`EXTERNAL_EVENT_SCHEMAS` in `packages/game-engine/src/events.ts`). There is no second event model.
+`null` means "nothing should happen now".
+
+**What it cannot express.** The engine has no external schema for `ROUND_START`, `ROUND_END`,
+`GAME_END`, `PLAYER_OUT`, `POWER_ACTIVATED` or `OBJECTIVE_COMPLETED`, and the external `ROLE_CHANGE`
+has no `cause` field. So the Game Master cannot start or end a round or the game, put a player out,
+activate a power, complete an objective, or claim that a role change was a tag. No event sets a
+score. For each game, the schema given to the model is further narrowed to the kinds that game
+allows.
+
+**Outcomes.** `propose` returns a `Result`:
+
+| Outcome             | Meaning                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------ |
+| ok                  | A valid proposal, the number of attempts, and the provider and model used                  |
+| `GAME_NOT_ACTIVE`   | No round is running; the model is not called                                               |
+| `INVALID_CONTEXT`   | The definition is not the game being played; the model is not called                       |
+| `MODEL_UNAVAILABLE` | The runtime failed; `modelErrorCode` says how (unreachable, timeout, model not pulled, …)  |
+| `INVALID_PROPOSAL`  | The model replied, but not validly, after every attempt; includes the issues and the reply |
+
+If Ollama is down or the model has not been pulled, the caller gets `MODEL_UNAVAILABLE`. Nothing
+falls back to another model.
+
+**Why it cannot change a game.** The agent has no tools. The Game Master object has one method. The
+module imports types and schemas from the engine and none of its entry points; a test reads the
+source files and fails if that changes. Its only output is a returned value. A test passes it a
+deeply frozen game and checks it is unchanged.
+
+### Where Mastra fits
+
+Mastra provides the agent: instructions, the model call, and structured output. The Game Master is a
+single `Agent` with `tools: {}`, limited to one step. There are no workflows, no memory, no other
+agents, and no Mastra server.
+
+The agent's model is not a Mastra or AI-SDK provider for Ollama. It is `createProviderLanguageModel`,
+a small adapter that implements the language-model interface Mastra expects on top of this project's
+existing `ModelProvider`. So the runtime is still chosen in one place, and no OpenAI client library
+is a dependency.
+
+### What is not used yet
+
+Each game definition also carries `encourage` and `exampleTwists`. They were written in Phase 1,
+before the event vocabulary existed, and several describe things no event can express ("taggers may
+only hop"). They are **not** put in the prompt, because the prompt tells the model not to invent
+mechanics the game does not have.
 
 ### Why one agent and not a crew
 
@@ -130,8 +217,8 @@ The Zod schema is converted to JSON Schema and handed to the runtime, which cons
 during generation:
 
 ```ts
-// packages/ai/src/structured.ts
-const jsonSchema = toJsonSchema(schema, schemaName);
+// The Game Master gives Mastra a Zod schema; Mastra passes it to the model as a JSON Schema
+// response format; the adapter hands that to the provider:
 // → Ollama:            { format: jsonSchema }
 // → OpenAI-compatible: { response_format: { type: 'json_schema', json_schema: { strict: true, ... } } }
 ```
@@ -139,9 +226,6 @@ const jsonSchema = toJsonSchema(schema, schemaName);
 This is the single biggest reason a **4B** open-weight model is viable here. The question is not "is
 the model clever enough to remember the JSON format" — the grammar makes malformed output largely
 unreachable. The model only has to be good at the creative part.
-
-`io: 'input'` is passed to the converter deliberately: the schema describes what the model must
-_produce_, so fields carrying Zod defaults are optional rather than demanded.
 
 ### Layer 2 — Zod validation
 
@@ -198,10 +282,13 @@ flowchart TD
     S -- "allow" --> E["Engine applies it"]
 ```
 
+Of this diagram, the JSON, schema and repair steps are implemented in the Game Master. The safety
+step and "engine applies it" are not.
+
 **The repair loop is bounded and informative.** On a validation failure, or a reply that is not JSON
 at all, the model is told what was wrong, shown its own rejected output, and asked once more. If the
-budget runs out the failure is reported as `OUTPUT_NOT_JSON` or `OUTPUT_SCHEMA_INVALID`, whichever the
-last attempt was. Transport faults are not repaired; they are thrown to the caller. Small models repair well
+budget runs out the Game Master returns `INVALID_PROPOSAL` with the issues and the last reply. A model
+that cannot be reached is not repaired; it is reported as `MODEL_UNAVAILABLE`. Small models repair well
 when feedback names the field and the constraint. The budget defaults to one extra attempt — past
 that, the turn is dropped, because a Game Master that goes quiet for a round is fine and one that
 takes twenty seconds is not.
@@ -264,9 +351,10 @@ project can be built and contributed to.
 - **The dev contract matches production.** The container exposes the same HTTP interface the GPU host
   will. Development is a scaled-down production, not a different system.
 
-The tests never require a running model. `packages/ai` uses a scripted test double for the repair
-loop and `vi.stubGlobal('fetch')` for the adapters, so CI needs no GPU — and the repo ships **no fake
-provider** in `src`.
+The tests never require a running model. `packages/ai` uses a scripted stand-in provider, defined in
+a test-support file, and `vi.stubGlobal('fetch')` for the HTTP adapters, so CI needs no GPU. No fake
+model is used by production code. The one test that calls a real model, `game-master.live.ts`, is
+excluded from `npm test` and `npm run verify` and is run by hand with `npm run ai:live`.
 
 ---
 
@@ -323,18 +411,18 @@ collecting.
 
 ---
 
-## 8. Phase 3: what gets built
+## 8. What comes next
 
-| Piece                            | Where                                               |
-| -------------------------------- | --------------------------------------------------- |
-| Game Master agent (Mastra)       | `packages/ai/src/agent/`                            |
-| Prompt assembly from definitions | `packages/ai/src/agent/prompt.ts`                   |
-| Turn trigger policy              | when to fire, and when to stay quiet                |
-| Hand-off of proposals to engine  | through the engine's event validation (Phase 2)     |
-| Golden-prompt regression tests   | real Gemma output, pinned, asserted against schemas |
+Not built, in the order the pipeline needs them:
 
-Mastra is **not installed yet**, deliberately. It arrives with the agent that uses it; the seam it
-plugs into — `gameEventSchema` and `generateStructured()` — already exists and is covered by tests.
+| Piece                                   | Notes                                                               |
+| --------------------------------------- | ------------------------------------------------------------------- |
+| A real Gemma run                        | `npm run ai:live` exists; the result has not been recorded here     |
+| Safety validation of a proposal         | Specified in [SAFETY.md](./SAFETY.md); taxonomy and contracts exist |
+| Passing a proposal to the engine        | Through `submitGameEvent`, which validates it against the game      |
+| When to ask the Game Master             | Nothing calls `propose` yet; there is no trigger or schedule        |
+| Limits on how often events are proposed | The engine accepts any number of valid external events              |
+| Prompt evaluation                       | Recorded real outputs, asserted against the schemas                 |
 
-The deterministic safety validator is specified in [SAFETY.md](./SAFETY.md) and is not part of
-Phase 3.
+`generateStructured()` in `structured.ts` predates the Game Master. It is still tested and exported,
+but the Game Master does not use it; it has its own repair loop around the Mastra agent.

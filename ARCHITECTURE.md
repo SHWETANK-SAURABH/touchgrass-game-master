@@ -78,7 +78,7 @@ whether that proposal becomes an event.
 ```mermaid
 flowchart TD
     State["Game state<br/>(session + definition + log)"] --> Agent
-    Agent["Game Master agent<br/><i>planned — Phase 3</i>"] --> Model
+    Agent["Game Master agent<br/>proposes only (Phase 3A)"] --> Model
     Model["Gemma via ModelProvider<br/>grammar-constrained decoding"] --> Raw
 
     Raw["Raw JSON completion"] --> Zod
@@ -109,7 +109,8 @@ Three properties hold at every arrow:
 
 ## 4. Agent architecture
 
-> **Phase 1 status:** the contract and the generation machinery exist. The agent itself is Phase 3.
+> **Status (Phase 3A):** the Game Master exists and returns proposals. Nothing sends a proposal to
+> the engine yet, and there is no safety validator. See [AI.md](./AI.md).
 
 An "agent" in this project is narrow and deliberately unglamorous: a component that observes game
 state, decides whether to act, and emits a structured proposal into a validation pipeline. It has no
@@ -123,26 +124,26 @@ flowchart LR
         P["Prohibitions<br/>gameMaster.avoid"]
     end
 
-    Inputs --> Prompt["Prompt assembly"]
-    Prompt --> GS["generateStructured()<br/><b>implemented</b>"]
-    GS --> Schema["JSON Schema from Zod<br/>constrains decoding"]
-    Schema --> Provider["ModelProvider<br/><b>implemented</b>"]
-    Provider --> Turn["GameMasterTurn<br/>1–3 proposals"]
-    Turn --> Out["→ safety → engine"]
+    Inputs --> Prompt["Prompt: system prompt + read-only game description"]
+    Prompt --> Agent["Mastra agent<br/>no tools, one step"]
+    Agent --> Adapter["Model adapter"]
+    Adapter --> Provider["ModelProvider → Ollama → Gemma"]
+    Agent --> Check["Proposal validation<br/>engine's external-event schemas"]
+    Check --> Out["{ rationale, event | null }<br/>returned to the caller"]
 ```
 
-What is already in place:
+What is in place:
 
-- **`gameEventSchema`** (`packages/game-engine/src/events.ts`) — the exact shape anything the agent
-  suggests must take: a strict discriminated union of event kinds, of which an outside source may send seven. How many events one turn may
-  carry is a Phase 3 decision.
-- **`generateStructured()`** (`packages/ai/src/structured.ts`) — Zod → JSON Schema → constrained
-  generation → Zod validation → bounded repair loop.
-- **Per-game guidance as data** — each definition carries a `gameMaster` block with a persona, an
-  `encourage` list, an `avoid` list, and hand-written example twists for few-shot prompting.
+- **The Game Master** (`packages/ai/src/game-master/`) — one Mastra agent with no tools. Given a
+  `GameState` and its `GameDefinition`, `propose` returns `{ rationale, event | null }` or a typed
+  error.
+- **The proposal schema** reuses the engine's external-event schemas, narrowed per game to the kinds
+  that game allows. Lifecycle and engine-derived events cannot be expressed in it.
+- **The model** is Gemma on a local Ollama by default, reached through the existing `ModelProvider`
+  and a small adapter that presents it to Mastra.
 
-Phase 3 adds the agent that assembles those inputs into a prompt and decides _when_ to fire.
-[AI.md](./AI.md) covers the reasoning in depth.
+What is not: any code that calls the Game Master during a game, the safety validator, and the
+hand-off of a proposal to `submitGameEvent`.
 
 ### Why one agent, not several
 
@@ -500,13 +501,11 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
 | Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
 | Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
-| Phase 3 | Game Master: Mastra agent on Gemma, sending validated game events to the engine                             | Next         |
+| Phase 3 | Game Master. 3A (local Gemma + Mastra, returns proposals) is done; safety and engine hand-off are next      | In progress  |
 | Later   | Safety validator, realtime (WebSockets + Redis), MongoDB persistence, Sentry, deployment — not scheduled    | Planned      |
 
-**Mastra is not installed yet.** It is the intended agent framework, and it arrives in Phase 3 with
-the agent that uses it. Installing a framework ahead of the code that needs it produces a dead
-dependency; the seam it plugs into — `gameEventSchema` and `generateStructured()` — already
-exists and is tested.
+**Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
+framework ahead of the code that needs it produces a dead dependency.
 
 The same reasoning explains the missing `realtime/` and `database/` packages. The suggested structure
 listed them; creating empty directories to match a diagram would have made the architecture look

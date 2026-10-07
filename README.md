@@ -17,10 +17,11 @@ AI proposes  →  Zod validates  →  Safety validates  →  Engine executes  �
 The model never touches game state. That is the whole architecture in one line, and the reason the
 pieces are split the way they are.
 
-> **Status: Phase 2 — deterministic game engine.** Tag and Hide & Seek are fully playable through
-> the engine with no AI: lifecycle, rounds, timer, player actions, game events, scoring and winners
-> are implemented and tested. **Not built yet:** the Game Master (Mastra + Gemma — Phase 3), the
-> safety validator, realtime multiplayer, persistence, and any game UI. See
+> **Status: Phase 3A — local Game Master.** Tag and Hide & Seek are fully playable through the
+> deterministic engine with no AI. A Game Master now exists — a Mastra agent running Gemma through
+> a local Ollama — that reads a game and returns a structured event proposal. **It is not connected
+> to a game yet:** nothing passes a proposal to the engine, and there is no safety validator,
+> realtime multiplayer, persistence, or game UI. See
 > [ARCHITECTURE.md § Roadmap](./ARCHITECTURE.md#13-roadmap).
 
 ---
@@ -71,18 +72,19 @@ Already running Ollama on the host? Skip `ai:up` / `ai:pull` and just
 
 ### Scripts
 
-| Command                 | What it does                                          |
-| ----------------------- | ----------------------------------------------------- |
-| `npm run dev`           | Next.js dev server                                    |
-| `npm run build`         | Production build (standalone output)                  |
-| `npm run verify`        | Format check → lint → typecheck → tests. The CI gate. |
-| `npm test`              | Vitest, whole workspace                               |
-| `npm run typecheck`     | `tsc --noEmit` in every workspace                     |
-| `npm run lint`          | ESLint with type-aware rules                          |
-| `npm run format`        | Prettier, write mode                                  |
-| `npm run ai:up / :down` | Start / stop the local model runtime                  |
-| `npm run ai:pull`       | Pull `MODEL_NAME` into the runtime                    |
-| `npm run ai:logs`       | Tail the model runtime logs                           |
+| Command                 | What it does                                              |
+| ----------------------- | --------------------------------------------------------- |
+| `npm run dev`           | Next.js dev server                                        |
+| `npm run build`         | Production build (standalone output)                      |
+| `npm run verify`        | Format check → lint → typecheck → tests. The CI gate.     |
+| `npm test`              | Vitest, whole workspace                                   |
+| `npm run typecheck`     | `tsc --noEmit` in every workspace                         |
+| `npm run lint`          | ESLint with type-aware rules                              |
+| `npm run format`        | Prettier, write mode                                      |
+| `npm run ai:up / :down` | Start / stop the local model runtime                      |
+| `npm run ai:pull`       | Pull `MODEL_NAME` into the runtime                        |
+| `npm run ai:logs`       | Tail the model runtime logs                               |
+| `npm run ai:live`       | Manual test: one real Game Master call to the local model |
 
 GPU on the host? `docker compose --profile gpu up -d ollama-gpu`.
 
@@ -98,7 +100,7 @@ packages/
   game-definitions/       GameDefinition schema + the five games, as data
   game-engine/            Deterministic engine: actions, events, time, scoring, winners
   safety/                 Hazard taxonomy, policy derivation, verdict contract
-  ai/                     ModelProvider port, two adapters, structured generation
+  ai/                     ModelProvider + adapters, and the Game Master (Mastra agent)
 ```
 
 Imports between workspaces, as they are in the code today (no cycles):

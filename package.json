@@ -27,7 +27,8 @@
     "ai:up": "docker compose up -d ollama",
     "ai:pull": "docker compose run --rm model-init",
     "ai:logs": "docker compose logs -f ollama",
-    "ai:down": "docker compose down"
+    "ai:down": "docker compose down",
+    "ai:live": "vitest run --config vitest.live.config.mts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

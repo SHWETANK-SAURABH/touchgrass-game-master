@@ -2,7 +2,7 @@
 
 > **Phase 1 status.** The hazard taxonomy, the verdict contract, and policy derivation are implemented
 > and tested (`packages/safety`). The matching engine — the code that turns a proposal into a verdict
-> — is **not implemented** and is not scheduled before Phase 3 (the Game Master). This document is the specification it will be built
+> — is **not implemented**. The Game Master (Phase 3A) returns proposals that no safety check has seen. This document is the specification it will be built
 > against.
 
 ---

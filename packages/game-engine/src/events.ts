@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { OptionalEventKind } from '@touchgrass/game-definitions';
 import { err, ok, type Result } from '@touchgrass/shared';
 import { type EngineError, engineError } from './errors';
 
@@ -226,6 +227,54 @@ export type GameEndEvent = z.infer<typeof gameEndEventSchema>;
 export type PlayerOutEvent = z.infer<typeof playerOutEventSchema>;
 export type PowerActivatedEvent = z.infer<typeof powerActivatedEventSchema>;
 export type ObjectiveCompletedEvent = z.infer<typeof objectiveCompletedEventSchema>;
+
+// --- external events ----------------------------------------------------------
+
+/**
+ * ROLE_CHANGE as an outside source may send it: without a `cause`. Only the
+ * engine may say that a role change was the result of a tag.
+ */
+export const externalRoleChangeEventSchema = z
+  .object({
+    type: z.literal('ROLE_CHANGE'),
+    assignments: z
+      .array(z.object({ playerId: id, roleId: id }).strict())
+      .min(1)
+      .max(EVENT_LIMITS.maxRoleAssignments),
+  })
+  .strict()
+  .refine(
+    (event) =>
+      new Set(event.assignments.map((entry) => entry.playerId)).size === event.assignments.length,
+    { message: 'a player may appear once in a ROLE_CHANGE', path: ['assignments'] },
+  );
+
+/**
+ * The schema for each event kind that may come from outside the engine — a host
+ * today, the Game Master's proposals in Phase 3. Lifecycle events and the events
+ * derived from player actions have no entry, so they cannot be expressed here.
+ * This is the same boundary `submitGameEvent` enforces.
+ */
+export const EXTERNAL_EVENT_SCHEMAS = {
+  ZONE_CHANGE: zoneChangeEventSchema,
+  CHALLENGE: challengeEventSchema,
+  POWER_UP: powerUpEventSchema,
+  RULE_MODIFIER: ruleModifierEventSchema,
+  BONUS_OBJECTIVE: bonusObjectiveEventSchema,
+  TIME_EXTENSION: timeExtensionEventSchema,
+  ROLE_CHANGE: externalRoleChangeEventSchema,
+} as const satisfies Record<OptionalEventKind, z.ZodType>;
+
+export const externalGameEventSchema = z.discriminatedUnion('type', [
+  zoneChangeEventSchema,
+  challengeEventSchema,
+  powerUpEventSchema,
+  ruleModifierEventSchema,
+  bonusObjectiveEventSchema,
+  timeExtensionEventSchema,
+  externalRoleChangeEventSchema,
+]);
+export type ExternalGameEvent = z.infer<typeof externalGameEventSchema>;
 
 /**
  * Schema validation for an event from any source. This only answers "is it the

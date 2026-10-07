@@ -4,16 +4,17 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./game-master": "./src/game-master/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@mastra/core": "^1.75.0",
+    "@touchgrass/game-definitions": "*",
+    "@touchgrass/game-engine": "*",
     "@touchgrass/shared": "*",
     "zod": "^4.6.5"
-  },
-  "devDependencies": {
-    "@touchgrass/game-engine": "*"
   }
 }
