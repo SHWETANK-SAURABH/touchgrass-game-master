@@ -86,8 +86,9 @@ After one, every player is still in the game and none of their tokens work.
 
 No package calls a store. The session does not know stores exist and has no store parameter, hook or
 callback. The realtime layer does not save on an action, a host command, a tick, a join, a leave, a
-resume or a disconnect. Application code that takes a snapshot and gives it to a store is still to
-be written, and when to save is that code's decision.
+resume or a disconnect. `@touchgrass/session-persistence` provides the explicit operations that
+take a session's snapshot to a store and back; when to call them is the caller's decision, and
+nothing calls them yet.
 
 ## InMemorySessionStore
 

@@ -257,7 +257,8 @@ order give the same roles on any host.
 | Multiplayer command boundary                      | Phase 5A: `submitPlayerAction`, actor supplied by the caller     |
 | In-memory authoritative session holder            | Phase 5B: `@touchgrass/game-session`, one object per game        |
 | Session snapshot and validated restore            | Phase 5E: plain data out, validated in                           |
-| Session store interface, in-memory reference      | Phase 5F: `@touchgrass/session-store`; not durable, never called |
+| Session store interface, in-memory reference      | Phase 5F: `@touchgrass/session-store`; not durable               |
+| Explicit load / save / delete of a session        | Phase 5G: `@touchgrass/session-persistence`; nothing calls it    |
 | WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
 | Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Session registry, authentication, persistence     | Later                                                            |
@@ -447,6 +448,37 @@ The one implementation is `InMemorySessionStore`. It is for tests, local develop
 reference for how a store behaves. It is not persistence: it holds snapshots in the memory of one
 process and loses them when that process stops. A MongoDB store is deliberately deferred. There is no
 database, file, timer or background save anywhere in the project.
+
+**The persistence lifecycle (Phase 5G).** `@touchgrass/session-persistence` is the application-level
+code that calls a session and a store, which do not call each other.
+
+```
+loadSession(store, sessionId)   store.load → restoreGameSession → GameSession
+saveSession(store, session)     session.snapshot() → store.save
+deleteSession(store, sessionId) store.delete
+```
+
+- **Two authorities.** While a game runs, the `GameSession` is the authority. The store holds the
+  latest snapshot that was successfully saved, and nothing newer.
+- **Saves are explicit.** There is no autosave. No session operation and nothing in the realtime
+  layer causes a save; a caller chooses when to call `saveSession`, and nothing in the project
+  calls it yet. The save cadence for production is undecided.
+- **No transaction.** Changing a game and saving it are separate steps. If an action is accepted and
+  the save that follows fails, the live session keeps the change, the store keeps the older
+  snapshot, and the caller is told. Nothing is rolled back or retried. The live state and the stored
+  state can therefore differ until a later save succeeds.
+- **Distinct outcomes.** `INVALID_SESSION_ID`, `SESSION_NOT_FOUND`, `STORAGE_ERROR` and
+  `INVALID_SNAPSHOT` (a stored snapshot the session boundary refused, with its reason). A missing
+  session is never created on load.
+- **It takes and returns sessions.** `saveSession` accepts a `GameSession` and asks it for its
+  snapshot; `loadSession` returns a `GameSession`. A caller never hands it a `GameState`.
+- **No session registry.** The functions keep nothing between calls. The caller holds the session it
+  created or loaded, and passes the store in each time.
+- **Nothing of the transport is persisted.** Connections and bearer tokens stay in the room. Loading
+  a session does not attach it to a room, and no client connecting causes a load.
+
+A saved session is exactly as durable as the store it was saved to, and today that is process
+memory.
 
 ### The WebSocket transport (Phases 5C and 5D)
 
@@ -829,6 +861,7 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
 | 5E      | Session snapshot and validated restore: the boundary persistence will use                                   | **Complete** |
 | 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                             | **Complete** |
+| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
 | Later   | Session registry, authentication and TLS, Redis, Game Master during a game, persistence, deployment         | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a

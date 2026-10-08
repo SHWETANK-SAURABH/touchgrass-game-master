@@ -40,8 +40,10 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 >
 > Phase 5E lets a session describe itself as a snapshot and be rebuilt from one after validation,
 > which is the boundary a future persistence layer will use. Phase 5F defines that layer's interface
-> (`SessionStore`) with an in-memory reference implementation. It is not durable, nothing saves
-> automatically, and no database is connected.
+> (`SessionStore`) with an in-memory reference implementation. Phase 5G adds the explicit
+> operations that connect the two: load, save and delete a session. It is not durable, nothing saves
+> automatically, a failed save leaves the running game ahead of what is stored, and no database is
+> connected.
 >
 > Phase 5D adds lifecycle and control to that transport. A player who drops can resume on a new
 > connection with a token the server gave them at join; a player can leave before the game starts;
@@ -133,6 +135,7 @@ packages/
   game-engine/            Deterministic engine: actions, events, time, scoring, winners
   game-session/           In-memory holder of one game's authoritative state
   session-store/          Persistence interface for session snapshots; in-memory reference only
+  session-persistence/    Explicit load / save / delete between a session and a store
   realtime/               WebSocket transport around one game session
   safety/                 Hazard taxonomy, policy, and the deterministic safety validator
   ai/                     ModelProvider + adapters, and the Game Master (Mastra agent)
@@ -140,17 +143,18 @@ packages/
 
 Imports between workspaces, as they are in the code today (no cycles):
 
-| Workspace          | Imports                                               |
-| ------------------ | ----------------------------------------------------- |
-| `shared`           | nothing                                               |
-| `game-definitions` | nothing                                               |
-| `game-engine`      | `game-definitions`, `shared`                          |
-| `game-session`     | `game-engine`, `shared`                               |
-| `session-store`    | `game-session` (types), `shared`                      |
-| `realtime`         | `game-engine`, `game-session`, `shared`               |
-| `safety`           | `game-definitions`, `game-engine`, `shared`           |
-| `ai`               | `game-definitions`, `game-engine`, `safety`, `shared` |
-| `apps/web`         | `ai`, `game-definitions`, `safety`, `shared`          |
+| Workspace             | Imports                                               |
+| --------------------- | ----------------------------------------------------- |
+| `shared`              | nothing                                               |
+| `game-definitions`    | nothing                                               |
+| `game-engine`         | `game-definitions`, `shared`                          |
+| `game-session`        | `game-engine`, `shared`                               |
+| `session-store`       | `game-session` (types), `shared`                      |
+| `session-persistence` | `game-session`, `session-store`, `shared`             |
+| `realtime`            | `game-engine`, `game-session`, `shared`               |
+| `safety`              | `game-definitions`, `game-engine`, `shared`           |
+| `ai`                  | `game-definitions`, `game-engine`, `safety`, `shared` |
+| `apps/web`            | `ai`, `game-definitions`, `safety`, `shared`          |
 
 The engine imports nothing from `ai` or `safety`, so it can be read, tested, and trusted without
 opening a line of AI code. `safety` uses the engine's event types and one function that recognises
