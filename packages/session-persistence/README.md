@@ -15,8 +15,8 @@ a caller asks.
 
 **A saved session is exactly as durable as the store it was saved to.** `InMemorySessionStore` loses
 everything when the process stops. `MongoSessionStore` keeps snapshots in MongoDB. These functions
-work the same with either and cannot tell them apart. Nothing in the project creates a MongoDB store
-or calls these functions yet.
+work the same with either and cannot tell them apart. `@touchgrass/server` is the application code
+that calls them.
 
 ```ts
 import { InMemorySessionStore } from '@touchgrass/session-store';

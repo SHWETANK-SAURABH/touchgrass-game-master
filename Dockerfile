@@ -15,7 +15,9 @@ COPY packages/game-definitions/package.json ./packages/game-definitions/
 COPY packages/game-engine/package.json ./packages/game-engine/
 COPY packages/game-session/package.json ./packages/game-session/
 COPY packages/session-store/package.json ./packages/session-store/
+COPY packages/session-persistence/package.json ./packages/session-persistence/
 COPY packages/realtime/package.json ./packages/realtime/
+COPY packages/server/package.json ./packages/server/
 COPY packages/safety/package.json ./packages/safety/
 COPY packages/ai/package.json ./packages/ai/
 RUN npm ci

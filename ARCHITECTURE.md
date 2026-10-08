@@ -259,7 +259,8 @@ order give the same roles on any host.
 | Session snapshot and validated restore            | Phase 5E: plain data out, validated in                           |
 | Session store interface, in-memory reference      | Phase 5F: `@touchgrass/session-store`; not durable               |
 | Explicit load / save / delete of a session        | Phase 5G: `@touchgrass/session-persistence`; nothing calls it    |
-| MongoDB adapter for session snapshots             | Phase 5H: `MongoSessionStore`; not wired to anything             |
+| MongoDB adapter for session snapshots             | Phase 5H: `MongoSessionStore`                                    |
+| Persistent server: create, load, explicit save    | Phase 5I: `@touchgrass/server`; development only, no autosave    |
 | WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
 | Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Session registry, authentication, persistence     | Later                                                            |
@@ -474,9 +475,51 @@ The MongoDB adapter in short:
 - **Both stores run the same contract tests.** The MongoDB adapter runs them without a database,
   over documents held as BSON bytes, and against a real server only when `MONGODB_TEST_URI` is set.
 
-Nothing creates a `MongoSessionStore` outside its tests. No MongoDB instance is provisioned, no
-realtime action saves to one, and no deployment configuration mentions it. There is no file, timer or
-background save anywhere in the project.
+**The persistent server (Phase 5I).** `@touchgrass/server` is the application layer where the store,
+the lifecycle, the session and the room meet.
+
+```
+CREATE   createGameSession → saveSession → MongoSessionStore → MongoDB
+LOAD     MongoDB → MongoSessionStore → loadSession → restoreGameSession → GameSession
+SERVE    GameSession → Room → WebSocket server
+SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
+```
+
+| Piece         | Authority over                                   |
+| ------------- | ------------------------------------------------ |
+| `GameSession` | The running game                                 |
+| `Room`        | Connections and bearer tokens                    |
+| Store         | The latest snapshot that was successfully saved  |
+| Server layer  | Starting them, explicit saves, and shutting down |
+
+- **MongoDB is the store for persistent games.** The application constructs the `MongoSessionStore`
+  itself, from configuration it reads from the environment (`MONGODB_URI`, `MONGODB_DATABASE`,
+  `MONGODB_COLLECTION`). The store package reads no environment variable, and only the server's
+  development entry point makes a MongoDB store.
+- **Creating a game saves it once, or fails.** `create` reports success only if the first snapshot
+  was saved. If it was not, no session is returned and nothing is retried. An id that is already
+  stored is refused rather than overwritten.
+- **Persistence is explicit.** After creation a game is saved only when `save()` is called. No join,
+  action, host command, tick, leave, resume or disconnect saves anything, and the room and the
+  session still do not know a store exists. A running game is therefore usually ahead of what is
+  stored, and whatever happened since the last save is lost if the process stops. There is no
+  durability per action.
+- **The explicit save is not on the network.** The development server takes `save` typed in its
+  terminal. Exposing save, load or delete to clients needs an authentication decision first.
+- **Restore means restore.** A loaded game is exactly what was saved. Nothing is advanced, paused or
+  reset because time passed while it was stored. What a running game should do about that time is
+  undecided.
+- **The room is always new.** Tokens and connections are not in a snapshot. A loaded game gets a new
+  `GameSession`, a new `Room`, a new host token and no connections. Every player is still in the
+  game, and no token issued before the restore works.
+- **One room, one session, no registry.** A loaded session is the one the room is built around. The
+  server layer keeps no table of sessions, rooms or stores.
+- **Shutdown** stops the realtime server and then closes the store. It does not save.
+
+The persistent server needs a MongoDB server to run. The tests do not: they use the in-memory store,
+and the suites that use a real MongoDB server run only when `MONGODB_TEST_URI` is set. No MongoDB
+instance is provisioned by this project, and no deployment configuration mentions one. There is no
+file, timer or background save anywhere in the project.
 
 **The persistence lifecycle (Phase 5G).** `@touchgrass/session-persistence` is the application-level
 code that calls a session and a store, which do not call each other.
@@ -693,9 +736,9 @@ Decisions already fixed by the engine design:
 
 ## 8. Data architecture
 
-> **Planned — later phase** for Redis and for anything that uses MongoDB. Today every piece of state
-> is in-process. A MongoDB adapter for session snapshots exists (`MongoSessionStore`, §7) and is not
-> wired to anything; the input log and audit trail described below are not built.
+> **Planned — later phase** for Redis and for the input log and audit trail below. What exists is
+> narrower: session snapshots can be kept in MongoDB (`MongoSessionStore`, §7), and the development
+> server saves one when a game is created and again whenever it is told to.
 
 ```mermaid
 flowchart LR
@@ -878,21 +921,22 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                        | Status       |
-| ------- | ------------------------------------------------------------------------------------------------------------ | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                 | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable  | **Complete** |
-| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)  | **Complete** |
-| Phase 4 | Deterministic safety validator between domain validation and the engine                                      | **Complete** |
-| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                  | **Complete** |
-| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                   | **Complete** |
-| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                         | **Complete** |
-| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                        | **Complete** |
-| 5E      | Session snapshot and validated restore: the boundary persistence will use                                    | **Complete** |
-| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                              | **Complete** |
-| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                      | **Complete** |
-| 5H      | MongoDB adapter for the SessionStore interface; not wired to anything                                        | **Complete** |
-| Later   | Wiring persistence into the server, session registry, authentication and TLS, Redis, Game Master, deployment | Planned      |
+| Phase   | Scope                                                                                                       | Status       |
+| ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
+| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B) | **Complete** |
+| Phase 4 | Deterministic safety validator between domain validation and the engine                                     | **Complete** |
+| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                 | **Complete** |
+| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                  | **Complete** |
+| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
+| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
+| 5E      | Session snapshot and validated restore: the boundary persistence will use                                   | **Complete** |
+| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                             | **Complete** |
+| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
+| 5H      | MongoDB adapter for the SessionStore interface                                                              | **Complete** |
+| 5I      | Persistent server: create, load, explicit save and shutdown around one game                                 | **Complete** |
+| Later   | Save cadence, session registry, authentication and TLS, token persistence, Redis, Game Master, deployment   | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

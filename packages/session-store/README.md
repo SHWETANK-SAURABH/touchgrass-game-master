@@ -8,8 +8,9 @@ and two implementations of it.
 | `InMemorySessionStore` | The memory of one process | Tests, local development, the reference    |
 | `MongoSessionStore`    | A MongoDB collection      | Persistence, once something is wired to it |
 
-**Nothing in this project uses a database yet.** The MongoDB adapter exists and is tested, but no
-server, script or application code creates one, no MongoDB instance is provisioned, and nothing saves
+**This package connects to nothing on its own.** A store is created by application code, which
+passes in its configuration. In this project that is `@touchgrass/server`, whose development entry
+point makes a `MongoSessionStore`. No MongoDB instance is provisioned, and nothing saves
 automatically.
 
 ```

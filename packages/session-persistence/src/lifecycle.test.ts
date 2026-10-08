@@ -638,10 +638,14 @@ describe('the coordinator keeps nothing', () => {
   });
 
   it('is not known to the engine, the session, the store, the transport, the AI or safety', () => {
-    for (const other of readdirSync(root).filter((name) => name !== 'session-persistence')) {
-      const manifest = readFileSync(join(root, other, 'package.json'), 'utf-8');
-      expect(manifest, other).not.toContain('session-persistence');
-    }
+    // The server package is the application layer that calls these functions.
+    // No other package depends on this one.
+    const callers = readdirSync(root).filter((name) =>
+      readFileSync(join(root, name, 'package.json'), 'utf-8').includes(
+        '"@touchgrass/session-persistence": ',
+      ),
+    );
+    expect(callers).toEqual(['server']);
     // Neither the session nor the realtime layer mentions a store at all.
     for (const other of ['game-session', 'realtime', 'game-engine']) {
       const manifest = readFileSync(join(root, other, 'package.json'), 'utf-8');

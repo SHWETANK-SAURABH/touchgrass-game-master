@@ -29,7 +29,8 @@
     "ai:logs": "docker compose logs -f ollama",
     "ai:down": "docker compose down",
     "ai:live": "vitest run --config vitest.live.config.mts",
-    "realtime:dev": "tsx packages/realtime/src/dev.ts"
+    "realtime:dev": "tsx packages/realtime/src/dev.ts",
+    "server:dev": "tsx packages/server/src/dev.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

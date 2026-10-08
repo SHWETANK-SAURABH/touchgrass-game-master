@@ -42,8 +42,10 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 > which is the boundary a future persistence layer will use. Phase 5F defines that layer's interface
 > (`SessionStore`) with an in-memory reference implementation. Phase 5G adds the explicit
 > operations that connect the two: load, save and delete a session. Phase 5H adds a MongoDB adapter
-> for that interface. Nothing creates one yet: no database is provisioned or connected, nothing saves
-> automatically, and a failed save leaves the running game ahead of what is stored.
+> for that interface. Phase 5I adds a development server that keeps one game in MongoDB: it saves a
+> game when it is created, loads a stored one, and saves again only when told to. Player actions are
+> not saved automatically, tokens and connections are never stored, and a game brought back from the
+> database gets a new room in which no earlier token works.
 >
 > Phase 5D adds lifecycle and control to that transport. A player who drops can resume on a new
 > connection with a token the server gave them at join; a player can leave before the game starts;
@@ -105,20 +107,21 @@ Already running Ollama on the host? Skip `ai:up` / `ai:pull` and just
 
 ### Scripts
 
-| Command                 | What it does                                                |
-| ----------------------- | ----------------------------------------------------------- |
-| `npm run dev`           | Next.js dev server                                          |
-| `npm run build`         | Production build (standalone output)                        |
-| `npm run verify`        | Format check → lint → typecheck → tests. The CI gate.       |
-| `npm test`              | Vitest, whole workspace                                     |
-| `npm run typecheck`     | `tsc --noEmit` in every workspace                           |
-| `npm run lint`          | ESLint with type-aware rules                                |
-| `npm run format`        | Prettier, write mode                                        |
-| `npm run ai:up / :down` | Start / stop the local model runtime                        |
-| `npm run ai:pull`       | Pull `MODEL_NAME` into the runtime                          |
-| `npm run ai:logs`       | Tail the model runtime logs                                 |
-| `npm run ai:live`       | Manual test: one real Game Master call to the local model   |
-| `npm run realtime:dev`  | Development only: one game over WebSocket; prints its codes |
+| Command                 | What it does                                                      |
+| ----------------------- | ----------------------------------------------------------------- |
+| `npm run dev`           | Next.js dev server                                                |
+| `npm run build`         | Production build (standalone output)                              |
+| `npm run verify`        | Format check → lint → typecheck → tests. The CI gate.             |
+| `npm test`              | Vitest, whole workspace                                           |
+| `npm run typecheck`     | `tsc --noEmit` in every workspace                                 |
+| `npm run lint`          | ESLint with type-aware rules                                      |
+| `npm run format`        | Prettier, write mode                                              |
+| `npm run ai:up / :down` | Start / stop the local model runtime                              |
+| `npm run ai:pull`       | Pull `MODEL_NAME` into the runtime                                |
+| `npm run ai:logs`       | Tail the model runtime logs                                       |
+| `npm run ai:live`       | Manual test: one real Game Master call to the local model         |
+| `npm run realtime:dev`  | Development only: one game over WebSocket; prints its codes       |
+| `npm run server:dev`    | Development only: the same, kept in MongoDB (needs `MONGODB_URI`) |
 
 GPU on the host? `docker compose --profile gpu up -d ollama-gpu`.
 
@@ -136,6 +139,7 @@ packages/
   game-session/           In-memory holder of one game's authoritative state
   session-store/          Persistence interface for session snapshots; in-memory and MongoDB adapters
   session-persistence/    Explicit load / save / delete between a session and a store
+  server/                 Persistent server: one game, kept in MongoDB, saved when asked
   realtime/               WebSocket transport around one game session
   safety/                 Hazard taxonomy, policy, and the deterministic safety validator
   ai/                     ModelProvider + adapters, and the Game Master (Mastra agent)
@@ -143,18 +147,19 @@ packages/
 
 Imports between workspaces, as they are in the code today (no cycles):
 
-| Workspace             | Imports                                               |
-| --------------------- | ----------------------------------------------------- |
-| `shared`              | nothing                                               |
-| `game-definitions`    | nothing                                               |
-| `game-engine`         | `game-definitions`, `shared`                          |
-| `game-session`        | `game-engine`, `shared`                               |
-| `session-store`       | `game-session` (types), `shared`                      |
-| `session-persistence` | `game-session`, `session-store`, `shared`             |
-| `realtime`            | `game-engine`, `game-session`, `shared`               |
-| `safety`              | `game-definitions`, `game-engine`, `shared`           |
-| `ai`                  | `game-definitions`, `game-engine`, `safety`, `shared` |
-| `apps/web`            | `ai`, `game-definitions`, `safety`, `shared`          |
+| Workspace             | Imports                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------- |
+| `shared`              | nothing                                                                                     |
+| `game-definitions`    | nothing                                                                                     |
+| `game-engine`         | `game-definitions`, `shared`                                                                |
+| `game-session`        | `game-engine`, `shared`                                                                     |
+| `session-store`       | `game-session` (types), `shared`                                                            |
+| `session-persistence` | `game-session`, `session-store`, `shared`                                                   |
+| `server`              | `game-engine`, `game-session`, `realtime`, `session-persistence`, `session-store`, `shared` |
+| `realtime`            | `game-engine`, `game-session`, `shared`                                                     |
+| `safety`              | `game-definitions`, `game-engine`, `shared`                                                 |
+| `ai`                  | `game-definitions`, `game-engine`, `safety`, `shared`                                       |
+| `apps/web`            | `ai`, `game-definitions`, `safety`, `shared`                                                |
 
 The engine imports nothing from `ai` or `safety`, so it can be read, tested, and trusted without
 opening a line of AI code. `safety` uses the engine's event types and one function that recognises
