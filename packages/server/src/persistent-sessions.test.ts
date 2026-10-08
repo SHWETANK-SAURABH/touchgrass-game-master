@@ -322,6 +322,7 @@ describe('the application layer keeps no module-level state and no storage of it
       'persistent-sessions.ts',
       'session-handle.ts',
       'session-registry.ts',
+      'session-server.ts',
     ]);
     for (const [name, source] of sources) {
       const code = strip(source);

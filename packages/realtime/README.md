@@ -39,13 +39,14 @@ every token are gone.
 
 ## Modules
 
-| Module           | Does                                                                           |
-| ---------------- | ------------------------------------------------------------------------------ |
-| `protocol.ts`    | The message envelopes and `parseClientMessage`. Knows messages, not games      |
-| `room.ts`        | `createRoom`: connections, players, tokens, the host role, broadcast, `tick`   |
-| `hosted-game.ts` | `createHostedGame`: makes a session, its room and its host token together      |
-| `ws-server.ts`   | `createRealtimeServer`: a thin `ws` adapter. The only module that imports `ws` |
-| `dev.ts`         | The development entry point behind `npm run realtime:dev`                      |
+| Module             | Does                                                                              |
+| ------------------ | --------------------------------------------------------------------------------- |
+| `protocol.ts`      | The message envelopes and `parseClientMessage`. Knows messages, not games         |
+| `room.ts`          | `createRoom`: connections, players, tokens, the host role, broadcast, `tick`      |
+| `hosted-game.ts`   | `createHostedGame`: makes a session, its room and its host token together         |
+| `ws-server.ts`     | `createRealtimeServer`: a thin `ws` adapter around one room                       |
+| `routed-server.ts` | `createRoutedRealtimeServer`: the same adapter for many rooms behind one listener |
+| `dev.ts`           | The development entry point behind `npm run realtime:dev`                         |
 
 ## Protocol
 
@@ -91,6 +92,13 @@ The server sends:
 | `NOT_HOST`               | A host command from a connection that is not the host             |
 | `HOST_ALREADY_CONNECTED` | The host token was presented while another connection is the host |
 | `CANNOT_LEAVE`           | A leave after the game has started                                |
+| `INVALID_SESSION_PATH`   | The address connected to is not `/sessions/<sessionId>`           |
+| `SESSION_NOT_FOUND`      | The address names a session that does not exist                   |
+| `SESSION_UNAVAILABLE`    | The session exists but could not be made ready                    |
+| `SESSION_CLOSED`         | The session is no longer served. The connection is then closed    |
+
+The last four are sent by a listener that serves many sessions, and by a room that has been closed.
+No message envelope changed: a client of a single-room server sees exactly what it saw before.
 
 - Text frames only. A binary frame is `BAD_MESSAGE`.
 - A frame larger than the limit (4 KB by default) closes the socket with status 1009.
@@ -162,10 +170,50 @@ The tokens are **bearer capabilities, not authentication.**
   or a token.
 - The `Origin` of a connection is not checked.
 
+## Many rooms behind one listener
+
+```ts
+const server = await createRoutedRealtimeServer({ port: 3001, route });
+// route(sessionId) → a Room, or why there is none
+```
+
+A client connects to `ws://host/sessions/<sessionId>`. The session id is read from that address
+when the socket connects, `route` is asked for the room, and the socket becomes a connection of that
+room and of no other. After that it is an ordinary connection: the same six envelopes, the same
+checks, the same broadcasts.
+
+- **The address chooses, once.** No message carries a session id, and the envelopes are strict, so
+  nothing sent later can move a connection to another room. A query string is ignored.
+- **It fails closed.** An address that is not exactly `/sessions/<sessionId>`, an unknown session,
+  a session that cannot be made ready, and a `route` that throws each get one `error` frame and a
+  closed socket. A failing `route` is reported as `SESSION_UNAVAILABLE` with no detail.
+- **Nothing is read early.** `route` may take time, for example to load a session. The socket is
+  paused until it has a room; what it sent meanwhile is then handled in order, or dropped unread if
+  it is refused.
+- **No table.** The adapter asks `route` for every socket and keeps nothing. Whoever supplies
+  `route` decides which sessions exist and owns their rooms.
+- **Broadcasts stay in their room.** A room writes only to its own connections, so nothing one
+  session does reaches a connection of another.
+
+### Closing a room
+
+```ts
+room.attach(connection); // the room now knows of it, before it has sent anything
+room.close(); //            once, and for good
+```
+
+`close()` sends `SESSION_CLOSED` to every connection the room knows of, joined or not, closes them,
+and forgets every binding and token. From then on the room changes nothing: any frame is answered
+with `SESSION_CLOSED` and its connection closed, `attach` returns false, and `tick` does nothing.
+The game object is not touched, and no other room is affected. A room cannot be reopened; serving
+the session again means making a new room.
+
 ## What it guarantees
 
-- **One game per room, chosen by the server.** There is no session registry and no lookup. Nothing
-  in a URL or a message selects a game.
+- **One game per room, chosen by the server.** A room is given its session when it is made and
+  never looks one up. No message selects a game. Behind `createRealtimeServer` nothing in the URL
+  does either; behind `createRoutedRealtimeServer` the address a socket connects to selects its
+  room, once.
 - **A player acts only as themselves,** and a player's message cannot become a host command.
 - **The host can send four commands and no others.** `ADD_PLAYER`, `ADVANCE_PHASE` and anything
   else the engine accepts from trusted code are not expressible on the wire.
@@ -179,7 +227,9 @@ The tokens are **bearer capabilities, not authentication.**
 ## What it is not
 
 - **Not authenticated or encrypted.** See above. Real authentication and TLS are deferred.
-- **Not multi-game.** One session per server. No registry, no way for a client to create a game.
+- **No registry of its own.** `createRealtimeServer` is one session per server. The routed
+  listener serves many rooms but holds no table of them: it asks its caller's `route` for each
+  socket. Neither gives a client a way to create a game.
 - **No automatic tick.** `room.tick(ctx)` advances time and broadcasts if the game changed. It is a
   trusted server-side call and nothing calls it on a timer, so a round nobody acts in does not end
   by itself.

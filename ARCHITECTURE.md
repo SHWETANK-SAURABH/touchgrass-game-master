@@ -264,7 +264,8 @@ order give the same roles on any host.
 | WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
 | Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Many loaded games in one process                  | Phase 5M: `createSessionRegistry`; no network routing yet        |
-| Multi-session transport, authentication           | Later                                                            |
+| One listener for many games                       | Phase 5N: `startSessionServer`, `/sessions/<sessionId>`          |
+| Authentication, eviction, reconnect after reload  | Later                                                            |
 
 ---
 
@@ -541,8 +542,29 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
     game with `SESSION_LOADED`, because a live game's next save would write the snapshot back.
     Ending a game is still the `ABORT_SESSION` host command and has nothing to do with either.
   - **It is one process.** Two processes, or two registries, can still load the same session and
-    overwrite each other. And a registry attaches no listener: the transport still serves one room
-    per port, so reaching several registry sessions over the network is a later phase.
+    overwrite each other. A registry attaches no listener of its own.
+- **One listener for many games (Phase 5N).** `startSessionServer` owns one registry, over one
+  store, and one WebSocket listener. A client connects to `ws://host/sessions/<sessionId>`.
+  - **The address chooses the session, once.** The transport reads the session id from the address
+    when the socket connects and asks for that session's room: `registry.get`, or else
+    `registry.load`. From then on the socket is a connection of that one room. No message envelope
+    changed and none carries a session id, so nothing a client sends can select another game.
+  - **Ownership is unchanged.** The transport chooses the room. Only the registry loads a session.
+    The room owns the connection. The session owns the game. The realtime package's routed adapter
+    holds no table and knows nothing of the registry or of persistence: it is given a `route`
+    function and asks it for every socket.
+  - **It fails closed.** A malformed address, an unknown session, a session that cannot be loaded
+    and a shutting-down server each give one `error` frame and a closed socket. Nothing a socket
+    sends is read before it has a room. Sessions are not created over the network.
+  - **A room can be closed.** `room.close()` tells and closes every connection the room knows of
+    and makes the room refuse everything afterwards. A session handle closes its room as the first
+    step of `close()` and `shutdown()`, so unloading a session disconnects exactly its own
+    connections and an unloaded handle can no longer change its game through the room.
+  - **Isolation is per room.** Connections, tokens, the host role and broadcasts belong to one
+    room. Sessions share the listener and the store and nothing else; there is no lock across them.
+  - **Still development-stage.** No authentication: knowing a session id is enough to connect, and
+    connecting loads a stored session. No eviction, no automatic time, no reconnect across a
+    reload, and one process only.
 - **A server makes its saves one at a time (Phase 5L).** Saves on one `PersistentServer` wait for
   the one before, so the store never has two writes from that server in flight and a later save
   never stores an older state. A waiting save captures the game when it starts, not when it was
@@ -964,22 +986,22 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                            | Status       |
-| ------- | ---------------------------------------------------------------------------------------------------------------- | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                     | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable      | **Complete** |
-| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)      | **Complete** |
-| Phase 4 | Deterministic safety validator between domain validation and the engine                                          | **Complete** |
-| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                      | **Complete** |
-| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                       | **Complete** |
-| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                             | **Complete** |
-| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                            | **Complete** |
-| 5E      | Session snapshot and validated restore: the boundary persistence will use                                        | **Complete** |
-| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                                  | **Complete** |
-| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                          | **Complete** |
-| 5H      | MongoDB adapter for the SessionStore interface                                                                   | **Complete** |
-| 5I      | Persistent server: create, load, explicit save and shutdown around one game                                      | **Complete** |
-| Later   | Save cadence, multi-session transport, authentication and TLS, token persistence, Redis, Game Master, deployment | Planned      |
+| Phase   | Scope                                                                                                       | Status       |
+| ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
+| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B) | **Complete** |
+| Phase 4 | Deterministic safety validator between domain validation and the engine                                     | **Complete** |
+| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                 | **Complete** |
+| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                  | **Complete** |
+| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
+| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
+| 5E      | Session snapshot and validated restore: the boundary persistence will use                                   | **Complete** |
+| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                             | **Complete** |
+| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
+| 5H      | MongoDB adapter for the SessionStore interface                                                              | **Complete** |
+| 5I      | Persistent server: create, load, explicit save and shutdown around one game                                 | **Complete** |
+| Later   | Save cadence, authentication and TLS, session eviction, token persistence, Redis, Game Master, deployment   | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { type Result, createPlayerId as mintPlayerId } from '@touchgrass/shared';
+import { type Result, createPlayerId as mintPlayerId, ok } from '@touchgrass/shared';
 import type { EngineContext, EngineError, GameState, HistoryEntry } from '@touchgrass/game-engine';
 import type { GameSession, SessionUpdate } from '@touchgrass/game-session';
 import {
@@ -50,6 +50,11 @@ import {
  *
  * The room has no clock and no timer. The caller passes the time with each
  * frame and with `tick`.
+ *
+ * A room can be closed, once and for good. Closing it tells every connection it
+ * knows of, closes them, and forgets every binding and token. After that it
+ * changes nothing: a frame is answered with SESSION_CLOSED and its connection
+ * closed, and `tick` does nothing. Another room is not affected in any way.
  */
 
 /** The little a room needs from a connection. A WebSocket is adapted to this. */
@@ -66,6 +71,14 @@ export interface Room {
    * in the room yet.
    */
   readonly receive: (connection: RoomConnection, raw: unknown, ctx: EngineContext) => void;
+
+  /**
+   * Tells the room a connection exists before it has sent anything, so that
+   * closing the room closes it too. `receive` does the same for a connection
+   * the room has not seen. It returns false, and keeps nothing, if the room is
+   * closed.
+   */
+  readonly attach: (connection: RoomConnection) => boolean;
 
   /**
    * Forgets a connection: who it was, and that it was the host if it was. The
@@ -89,6 +102,16 @@ export interface Room {
 
   /** How many connections are currently bound to a player. */
   readonly connectionCount: () => number;
+
+  /**
+   * Closes the room for good. Every connection it knows of, joined or not, is
+   * sent SESSION_CLOSED and closed; every binding and token is forgotten.
+   * Calling it again does nothing. The game itself is not touched.
+   */
+  readonly close: () => void;
+
+  /** Whether `close` has been called. */
+  readonly isClosed: () => boolean;
 }
 
 export interface RoomOptions {
@@ -131,6 +154,9 @@ export function createRoom(options: RoomOptions): Room {
   const playerForToken = new Map<string, string>();
   /** The connection that presented the host token, if one has. */
   let hostConnection: RoomConnection | undefined;
+  /** Every connection the room knows of, whether or not it is anyone yet. */
+  const attached = new Set<RoomConnection>();
+  let closed = false;
 
   const write = (connection: RoomConnection, text: string): void => {
     try {
@@ -219,6 +245,16 @@ export function createRoom(options: RoomOptions): Room {
     }
     playerOf.delete(connection);
     if (hostConnection === connection) hostConnection = undefined;
+  };
+
+  /** Tells a connection the room is closed, and closes it. */
+  const turnAway = (connection: RoomConnection): void => {
+    fail(connection, 'SESSION_CLOSED');
+    try {
+      connection.close();
+    } catch {
+      // It is going away either way.
+    }
   };
 
   const join = (
@@ -323,6 +359,9 @@ export function createRoom(options: RoomOptions): Room {
 
   return {
     receive(connection, raw, ctx) {
+      // A closed room reads nothing and changes nothing.
+      if (closed) return turnAway(connection);
+      attached.add(connection);
       const message = parseClientMessage(raw, maxMessageBytes);
       if (!message.ok) return fail(connection, message.error);
       // Before deciding who this connection is, drop any binding or token whose
@@ -344,9 +383,20 @@ export function createRoom(options: RoomOptions): Room {
       }
     },
 
-    disconnect: forget,
+    attach(connection) {
+      if (closed) return false;
+      attached.add(connection);
+      return true;
+    },
+
+    disconnect(connection) {
+      attached.delete(connection);
+      forget(connection);
+    },
 
     tick(ctx) {
+      // A closed room no longer moves its game on. The state is reported as it is.
+      if (closed) return ok({ state: session.getState(), entries: [] });
       const before = session.getState();
       const update = session.advanceTime(ctx);
       if (update.ok && update.value.state !== before) {
@@ -360,5 +410,19 @@ export function createRoom(options: RoomOptions): Room {
     isHost: (connection) => hostConnection === connection,
 
     connectionCount: () => playerOf.size,
+
+    close() {
+      if (closed) return;
+      closed = true;
+      const everyone = [...attached];
+      attached.clear();
+      playerOf.clear();
+      connectionOf.clear();
+      playerForToken.clear();
+      hostConnection = undefined;
+      for (const connection of everyone) turnAway(connection);
+    },
+
+    isClosed: () => closed,
   };
 }

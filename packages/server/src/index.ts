@@ -37,3 +37,10 @@ export {
   type SessionRegistryOptions,
   createSessionRegistry,
 } from './session-registry';
+
+export {
+  type SessionServer,
+  type SessionServerError,
+  type SessionServerOptions,
+  startSessionServer,
+} from './session-server';

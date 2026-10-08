@@ -23,3 +23,12 @@ export { type Room, type RoomConnection, type RoomOptions, createRoom, createTok
 export { type HostedGame, type HostedGameOptions, createHostedGame } from './hosted-game';
 
 export { type RealtimeServer, type RealtimeServerOptions, createRealtimeServer } from './ws-server';
+
+export {
+  SESSION_PATH_PREFIX,
+  type RoutedRealtimeServer,
+  type RoutedRealtimeServerOptions,
+  type RouteError,
+  createRoutedRealtimeServer,
+  sessionIdFromPath,
+} from './routed-server';

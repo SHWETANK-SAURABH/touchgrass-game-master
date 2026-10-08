@@ -175,6 +175,10 @@ export function createSessionHandle(options: SessionHandleOptions): SessionHandl
    * attempted.
    */
   const stop = async (finalSave: boolean): Promise<Result<void, SessionPersistenceError>> => {
+    // First, and in the same turn as `close()` or `shutdown()`: from here on no
+    // connection can change the game, and every one the room knows of is closed.
+    hosted.room.close();
+
     let failure: { readonly error: unknown } | undefined;
     try {
       await beforeStop?.();

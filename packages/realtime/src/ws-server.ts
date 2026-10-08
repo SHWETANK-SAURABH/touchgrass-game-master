@@ -54,11 +54,34 @@ export interface RealtimeServer {
   readonly close: () => Promise<void>;
 }
 
-function textOf(data: RawData, isBinary: boolean): string | null {
+/** A frame as text, or null for a binary one. */
+export function textOf(data: RawData, isBinary: boolean): string | null {
   if (isBinary) return null;
   if (Buffer.isBuffer(data)) return data.toString('utf8');
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
   return Buffer.from(data).toString('utf8');
+}
+
+/** Closes every socket and stops listening. Resolves once the port is free. */
+export async function stopListening(server: WebSocketServer): Promise<void> {
+  // Wait for each socket to report closed, so nothing is left half open when
+  // this resolves.
+  const sockets = [...server.clients].map(
+    (socket) =>
+      new Promise<void>((done) => {
+        socket.once('close', () => {
+          done();
+        });
+        socket.terminate();
+      }),
+  );
+  const stopped = new Promise<void>((closed, failed) => {
+    server.close((error) => {
+      if (error) failed(error);
+      else closed();
+    });
+  });
+  await Promise.all([...sockets, stopped]);
 }
 
 /** Starts listening. Resolves once the port is bound. */
@@ -117,26 +140,7 @@ export function createRealtimeServer(options: RealtimeServerOptions): Promise<Re
         port,
         room,
         socketCount: () => server.clients.size,
-        close: async () => {
-          // Wait for each socket to report closed, so nothing is left half open
-          // when this resolves.
-          const sockets = [...server.clients].map(
-            (socket) =>
-              new Promise<void>((done) => {
-                socket.once('close', () => {
-                  done();
-                });
-                socket.terminate();
-              }),
-          );
-          const stopped = new Promise<void>((closed, failed) => {
-            server.close((error) => {
-              if (error) failed(error);
-              else closed();
-            });
-          });
-          await Promise.all([...sockets, stopped]);
-        },
+        close: () => stopListening(server),
       });
     });
   });

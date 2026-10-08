@@ -12,10 +12,10 @@ It is where four existing pieces meet. Each keeps its own job.
 | `Room` (realtime)                  | Connections and bearer tokens                    |
 | This package                       | Starting them, explicit saves, and shutting down |
 
-**This is a development-stage server.** One listener serves one game. A process can hold many
-loaded games in a [session registry](#many-games-in-one-process), but nothing yet routes network
-connections to them. There is no authentication, the socket is unencrypted, and it is not deployed
-anywhere.
+**This is a development-stage server.** `startPersistentServer` serves one game from one listener.
+`startSessionServer` serves many games from one listener, through a
+[session registry](#many-games-in-one-process). There is no authentication, the socket is
+unencrypted, and it is not deployed anywhere.
 
 ```
 CREATE   createGameSession → saveSession → store            (saved once, or it fails)
@@ -72,6 +72,9 @@ startPersistentServer({ store, game, port, clock? }): Promise<Result<PersistentS
 
 createSessionRegistry({ store }): SessionRegistry
 // { create(command, ctx), load(sessionId), get(sessionId), delete(sessionId), shutdown() }
+
+startSessionServer({ store, port, clock? }): Promise<Result<SessionServer, …>>
+// SessionServer: { port, registry, socketCount(), shutdown() }
 
 parseServerConfig(env): Result<ServerConfig, ServerConfigError>
 ```
@@ -342,19 +345,104 @@ refuse new work  →  wait for what is under way  →  shut down every session  
 
 **What a registry is not.**
 
-- It is not networking. It attaches no listener, and the realtime adapter still serves one room per
-  port. Reaching several registry sessions over the network needs a routing decision that has not
-  been made. Until then a registry's rooms are driven directly, as the tests do.
+- It is not networking. It attaches no listener. `startSessionServer`, below, puts one in front of
+  it.
 - It is not a lock. The rule is per registry, in one process. Another process, or a second registry
   over the same store, can load the same session, and the last save wins.
 - It does not evict. A finished game stays loaded until its handle is closed or shut down.
-- A room has no way to drop its own connections. Whatever puts connections into a registry's room
-  must stop doing so before the handle is unloaded.
 
 Nothing is kept at module level. Two registries are independent.
 
 `createPersistentSessions` remains the registry-free layer underneath: it holds only a store, and
 loading the same id through it twice gives two independent sessions.
+
+## One listener for many games
+
+```ts
+const server = unwrap(await startSessionServer({ store, port: 3001 }));
+const game = unwrap(await server.registry.create(command, ctx)); // trusted server code
+// a client connects to  ws://host:3001/sessions/<game.session.id>
+```
+
+```
+client ──► ws://host/sessions/<sessionId>     the address chooses the session, once
+             ▼
+       one WebSocket listener                  reads the address, asks for the room
+             ▼
+       SessionRegistry                         get, or load from the one store
+             ▼
+       SessionHandle ──► Room ──► GameSession  as behind a single-game server
+```
+
+`startSessionServer` owns one registry over the one store it is given, and one listener. Each piece
+keeps its own job:
+
+| Piece         | Decides                                                             |
+| ------------- | ------------------------------------------------------------------- |
+| The transport | Which session a socket is for, from its address, when it connects   |
+| The registry  | Which sessions are loaded. It is the only thing that loads one      |
+| The room      | Everything about a connection after that: who it is, what it may do |
+| The session   | The game                                                            |
+
+**Routing.** A socket connects to `/sessions/<sessionId>`. The server takes the handle from
+`registry.get`, or else `registry.load`, and the socket becomes a connection of that handle's room.
+The message envelopes are unchanged and none carries a session id, so nothing a client sends later
+can reach another session. The join code is still checked by the room, as before.
+
+| A socket that connects to                          | Gets                                  |
+| -------------------------------------------------- | ------------------------------------- |
+| A loaded session                                   | That session's room                   |
+| A stored session that is not loaded                | It is loaded, then that room          |
+| An address that is not `/sessions/<sessionId>`     | `INVALID_SESSION_PATH`, and is closed |
+| A session that does not exist                      | `SESSION_NOT_FOUND`, and is closed    |
+| A session the store cannot give, or cannot restore | `SESSION_UNAVAILABLE`, and is closed  |
+| Any session, while the server is shutting down     | `SESSION_CLOSED`, and is closed       |
+
+A refusal is one `error` frame with the code and nothing else: no storage detail reaches a client.
+Connections that arrive together for a session that is not loaded share one load and one room.
+
+**Sessions are not created over the network.** The protocol has no message for it, and nothing
+authenticates who would be asking. Trusted server code creates them with `server.registry.create`.
+The same goes for saving, unloading and deleting: they are calls on the registry and its handles.
+
+**Isolation.** Each session has its own room, so its own connections, player tokens and host
+token. A broadcast goes to its room's connections only. A token from one session is
+`INVALID_TOKEN` at another's address. Sessions do not wait for each other: there is no lock around
+them, and each still makes its own saves one at a time.
+
+**A connection going away.** When a socket closes, for any reason, its room forgets it. The player
+stays in the game, and other connections of that session and of every other session are untouched.
+
+**A session being unloaded.** A handle's `close()` or `shutdown()` begins by closing its room:
+every connection of that session is sent `SESSION_CLOSED` and closed, including ones that never
+sent anything, and the room accepts nothing more. Connections of other sessions are not touched.
+This is true of every handle, so `startPersistentServer` now sends its clients `SESSION_CLOSED`
+before it stops as well.
+
+- A handle that has been unloaded is finished. Its room answers `SESSION_CLOSED`, its `tick` does
+  nothing, and its `save()` returns `STORAGE_ERROR`, so it can neither change the game nor write a
+  snapshot back.
+- A later connection to the same address loads the session again from the store, into a new room
+  with a new host token. No token from the old room works. If the session was still being saved,
+  the new connection waits for that save.
+- `registry.delete` still refuses a loaded session. After unloading and deleting, connecting to
+  that address is `SESSION_NOT_FOUND`.
+
+**`server.shutdown()`** stops everything:
+
+```
+refuse new connections  →  registry.shutdown()  →  listener stops
+```
+
+`registry.shutdown()` closes every session's connections, saves each session once if it has
+unsaved changes, and closes the store. The listener then stops and any socket still open is
+closed. It returns the registry's result, and calling it again returns the same result.
+
+**What it does not do.** Nothing here is authentication: anyone who can reach the port and knows
+a session id can connect to it, which also loads it if it is stored. Nothing evicts a loaded
+session, advances time, or saves on its own. There is no reconnect beyond the existing `resume`
+within one loaded room, and no development command starts this server yet; `npm run server:dev`
+is still the single-game server.
 
 ## Tests
 
@@ -370,8 +458,8 @@ it afterwards.
 
 ## Not here
 
-Autosave, saving per action, retries, transactions, revision checks, locks, one listener for
-several sessions, join-code routing, eviction of finished games, authentication, stored tokens,
+Autosave, saving per action, retries, transactions, revision checks, locks, creating a session
+over the network, join-code routing, eviction of finished games, authentication, stored tokens,
 reconnecting old clients after a restore, several servers sharing a game, Redis, and any adjustment
 of a running game's clock on load.
 

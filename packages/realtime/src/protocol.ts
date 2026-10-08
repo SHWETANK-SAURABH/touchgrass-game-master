@@ -117,6 +117,14 @@ export const TRANSPORT_ERROR_CODES = [
   'HOST_ALREADY_CONNECTED',
   /** A leave after the game has started. */
   'CANNOT_LEAVE',
+  /** The address a socket connected to does not name a session. */
+  'INVALID_SESSION_PATH',
+  /** The address names a session that does not exist. */
+  'SESSION_NOT_FOUND',
+  /** The session exists but could not be made ready. */
+  'SESSION_UNAVAILABLE',
+  /** The session is no longer being served. The connection is then closed. */
+  'SESSION_CLOSED',
 ] as const;
 export type TransportErrorCode = (typeof TRANSPORT_ERROR_CODES)[number];
 
