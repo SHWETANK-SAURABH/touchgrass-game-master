@@ -12,8 +12,10 @@ It is where four existing pieces meet. Each keeps its own job.
 | `Room` (realtime)                  | Connections and bearer tokens                    |
 | This package                       | Starting them, explicit saves, and shutting down |
 
-**This is a development-stage server.** One process serves one game. There is no authentication,
-the socket is unencrypted, and it is not deployed anywhere.
+**This is a development-stage server.** One listener serves one game. A process can hold many
+loaded games in a [session registry](#many-games-in-one-process), but nothing yet routes network
+connections to them. There is no authentication, the socket is unencrypted, and it is not deployed
+anywhere.
 
 ```
 CREATE   createGameSession → saveSession → store            (saved once, or it fails)
@@ -61,10 +63,15 @@ createPersistentSessions(store): PersistentSessions
 
 hostSession(session): { session, room, hostToken }
 
+createSessionHandle({ hosted, persist, beforeStop?, afterStop? }): SessionHandle
+// SessionHandle: { session, room, hostToken, save(), hasUnsavedChanges(), close(), shutdown() }
+
 startPersistentServer({ store, game, port, clock? }): Promise<Result<PersistentServer, …>>
 // game: { create: command } | { load: sessionId }
-// PersistentServer: { session, room, hostToken, port, save(), hasUnsavedChanges(),
-//                     close(), shutdown() }
+// PersistentServer: a SessionHandle, plus { port }
+
+createSessionRegistry({ store }): SessionRegistry
+// { create(command, ctx), load(sessionId), get(sessionId), delete(sessionId), shutdown() }
 
 parseServerConfig(env): Result<ServerConfig, ServerConfigError>
 ```
@@ -251,14 +258,103 @@ The application creates the store and owns it.
   `createMongoSessionStore`. That is the only place the environment is read and the only place a
   MongoDB store is made. The store package reads no environment variable.
 - `startPersistentServer` takes any `SessionStore`, so the tests use the in-memory one.
-- `close()` and `shutdown()` both end by closing the store, even if stopping the realtime server
-  failed. A server that failed to start does not close the store it was given.
+- A `PersistentServer`'s `close()` and `shutdown()` both end by closing the store, even if stopping
+  the realtime server failed. A server that failed to start does not close the store it was given.
+- A registry is given one store for all its sessions and closes it once, in `registry.shutdown()`.
+  For MongoDB that is one `MongoSessionStore`, so one client and one connection pool, however many
+  games are loaded.
 
-## No registry
+## Many games in one process
 
-There is no table of sessions, rooms or stores, and no module-level state. A caller is handed a
-`GameSession` and holds it. Loading the same id twice gives two independent sessions; nothing stops
-both being played and saved, and the last save wins.
+```ts
+const registry = createSessionRegistry({ store });
+```
+
+A registry holds the games loaded in one process.
+
+```
+Application
+ ├── SessionStore        one, shared, closed once by the registry
+ └── SessionRegistry
+      ├── SessionHandle A    session, room, host token, dirty marker, save queue
+      ├── SessionHandle B
+      └── SessionHandle C
+```
+
+A `SessionHandle` is everything that belongs to one game alone. It is what a `PersistentServer` is
+without its port, and its `save()`, `hasUnsavedChanges()`, `close()` and `shutdown()` behave as
+described above, with one difference: **a registry's handle never closes the store.** The store is
+shared, and only the registry closes it.
+
+**One id, at most one loaded session.** Inside one registry there is never a second `GameSession`
+for an id that is loaded.
+
+| Call                   | What happens                                                                     |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `create(command, ctx)` | Makes the game, saves its first snapshot, then makes its room and token          |
+| `load(id)`             | Returns the loaded handle, or joins a load under way, or restores from the store |
+| `get(id)`              | The handle if it is loaded here now. The store is not asked                      |
+| `delete(id)`           | Deletes the stored snapshot. Refused while the session is loaded                 |
+| `shutdown()`           | Shuts down every loaded session, then closes the store                           |
+
+- **Create.** The id is reserved before the store is touched, so of two creations of one id exactly
+  one goes on; the other is `SESSION_ALREADY_EXISTS`, as is an id that is loaded or already stored.
+  The room and host token are made only after the first snapshot is saved. If anything fails,
+  nothing is left: no entry, no room, no token, and the id can be tried again.
+- **Load.** `load` of a loaded id is not an error: it returns the same handle and does not read the
+  store. Loads that overlap share one restore and one handle, or one failure. A failed load is not
+  remembered. A loaded game always gets a new room and a new host token.
+- **Delete, unload and ending a game are three things.** Ending a game is the `ABORT_SESSION` host
+  command. Unloading is the handle's `close()` (discard unsaved changes) or `shutdown()` (save them
+  first); either removes it from the registry. `delete` removes the stored snapshot, and refuses a
+  loaded session with `SESSION_LOADED`: otherwise the live game's next save would write it back.
+  For the same reason a handle that has been unloaded can no longer save; its `save()` returns
+  `STORAGE_ERROR`.
+- **One at a time per id.** A load, a delete and an unload of the same id never overlap. A load
+  asked for while that session is shutting down waits for its final save and then restores it. A
+  delete asked for after a load finds the session loaded; a load asked for after a delete finds
+  nothing.
+- **Independent across ids.** Each handle has its own dirty marker and its own save queue. Saving
+  one game does not wait for another's save and does not change whether another has unsaved
+  changes. There is no shared queue.
+- **Isolated rooms.** Each handle has its own room, so its own player tokens, host token and
+  connections. A token from one session is `INVALID_TOKEN` in another, and a host command or a
+  broadcast never leaves its room.
+
+**`registry.shutdown()`** is the process-level stop:
+
+```
+refuse new work  →  wait for what is under way  →  shut down every session  →  close the store
+```
+
+- From the moment it is called, `create`, `load` and `delete` return `REGISTRY_CLOSED`. A registry
+  does not reopen.
+- A create or load already under way is waited for. If it succeeds, that session is shut down with
+  the rest.
+- Every loaded session gets `shutdown()`: one save if it has unsaved changes, none otherwise. They
+  run together, each through its own save queue.
+- A session that cannot be saved does not stop the others. The store is closed last, once, whatever
+  happened.
+- It returns success, or `SHUTDOWN_INCOMPLETE` with the sessions that were not saved, each with its
+  persistence error, and whether the store closed. A session its own caller was already shutting
+  down is waited for but reported to that caller, not here.
+- Calling it again returns the first call's result.
+
+**What a registry is not.**
+
+- It is not networking. It attaches no listener, and the realtime adapter still serves one room per
+  port. Reaching several registry sessions over the network needs a routing decision that has not
+  been made. Until then a registry's rooms are driven directly, as the tests do.
+- It is not a lock. The rule is per registry, in one process. Another process, or a second registry
+  over the same store, can load the same session, and the last save wins.
+- It does not evict. A finished game stays loaded until its handle is closed or shut down.
+- A room has no way to drop its own connections. Whatever puts connections into a registry's room
+  must stop doing so before the handle is unloaded.
+
+Nothing is kept at module level. Two registries are independent.
+
+`createPersistentSessions` remains the registry-free layer underneath: it holds only a store, and
+loading the same id through it twice gives two independent sessions.
 
 ## Tests
 
@@ -274,9 +370,10 @@ it afterwards.
 
 ## Not here
 
-Autosave, saving per action, retries, transactions, revision checks, locks, a session registry,
-authentication, stored tokens, reconnecting old clients after a restore, several servers sharing a
-game, Redis, and any adjustment of a running game's clock on load.
+Autosave, saving per action, retries, transactions, revision checks, locks, one listener for
+several sessions, join-code routing, eviction of finished games, authentication, stored tokens,
+reconnecting old clients after a restore, several servers sharing a game, Redis, and any adjustment
+of a running game's clock on load.
 
 ## Dependencies
 

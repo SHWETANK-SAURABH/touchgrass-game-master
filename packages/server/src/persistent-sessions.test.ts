@@ -286,7 +286,7 @@ describe('delete', () => {
   });
 });
 
-describe('the application layer adds no registry and no storage of its own', () => {
+describe('the application layer keeps no module-level state and no storage of its own', () => {
   const directory = dirname(fileURLToPath(import.meta.url));
   const root = joinPath(directory, '..', '..');
   const sources = readdirSync(directory)
@@ -320,11 +320,16 @@ describe('the application layer adds no registry and no storage of its own', () 
       'index.ts',
       'persistent-server.ts',
       'persistent-sessions.ts',
+      'session-handle.ts',
+      'session-registry.ts',
     ]);
     for (const [name, source] of sources) {
       const code = strip(source);
-      expect(code, name).not.toMatch(
-        /new Map|new Set|new WeakMap|\bclass\b|setInterval|setTimeout/,
+      expect(code, name).not.toMatch(/new Set|new WeakMap|\bclass\b|setInterval|setTimeout/);
+      // One table exists: the registry's own, made inside each registry.
+      const tables = code.split('\n').filter((line) => line.includes('new Map'));
+      expect(tables, name).toEqual(
+        name === 'session-registry.ts' ? ['  const entries = new Map<string, Entry>();'] : [],
       );
       expect(code, name).not.toMatch(/retry|redis|jsonwebtoken|\bjwt\b|autosave/i);
       if (name === 'dev.ts') continue;

@@ -67,32 +67,49 @@ export interface PersistentSessions {
   readonly delete: (sessionId: string) => Promise<Result<void, SessionPersistenceError>>;
 }
 
+/** Makes a game from a command. Nothing is stored. */
+export function makeSession(
+  command: unknown,
+  ctx: EngineContext,
+): Result<GameSession, CreateSessionError> {
+  const created = createGameSession(command, ctx);
+  if (created.ok) return created;
+  return err({
+    code: 'SESSION_NOT_CREATED',
+    message: 'The game could not be created.',
+    cause: { code: created.error.code, message: created.error.message },
+  });
+}
+
+/**
+ * Saves the first snapshot of a session that has just been made. An id that is
+ * already stored is refused, and the stored game is left as it is.
+ */
+export async function saveNewSession(
+  store: SessionStore,
+  session: GameSession,
+): Promise<Result<GameSession, CreateSessionError>> {
+  // Creating must not replace a game that is already stored under this id.
+  const existing = await loadSession(store, session.id);
+  if (existing.ok || existing.error.code === 'INVALID_SNAPSHOT') {
+    return err({
+      code: 'SESSION_ALREADY_EXISTS',
+      message: `A session "${session.id}" is already stored.`,
+    });
+  }
+  if (existing.error.code !== 'SESSION_NOT_FOUND') return existing;
+
+  const saved = await saveSession(store, session);
+  if (!saved.ok) return saved;
+  return ok(session);
+}
+
 export function createPersistentSessions(store: SessionStore): PersistentSessions {
   return {
     async create(command, ctx) {
-      const created = createGameSession(command, ctx);
-      if (!created.ok) {
-        return err({
-          code: 'SESSION_NOT_CREATED',
-          message: 'The game could not be created.',
-          cause: { code: created.error.code, message: created.error.message },
-        });
-      }
-      const session = created.value;
-
-      // Creating must not replace a game that is already stored under this id.
-      const existing = await loadSession(store, session.id);
-      if (existing.ok || existing.error.code === 'INVALID_SNAPSHOT') {
-        return err({
-          code: 'SESSION_ALREADY_EXISTS',
-          message: `A session "${session.id}" is already stored.`,
-        });
-      }
-      if (existing.error.code !== 'SESSION_NOT_FOUND') return existing;
-
-      const saved = await saveSession(store, session);
-      if (!saved.ok) return saved;
-      return ok(session);
+      const made = makeSession(command, ctx);
+      if (!made.ok) return made;
+      return saveNewSession(store, made.value);
     },
 
     load: (sessionId) => loadSession(store, sessionId),

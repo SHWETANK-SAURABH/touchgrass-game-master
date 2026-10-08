@@ -13,11 +13,27 @@ export {
 } from './persistent-sessions';
 
 export {
-  type ClosableSessionStore,
   type HostedSession,
+  type SessionHandle,
+  type SessionHandleOptions,
+  createSessionHandle,
+  hostSession,
+} from './session-handle';
+
+export {
+  type ClosableSessionStore,
   type PersistentServer,
   type PersistentServerError,
   type PersistentServerOptions,
-  hostSession,
   startPersistentServer,
 } from './persistent-server';
+
+export {
+  type RegistryClosedError,
+  type RegistryShutdownError,
+  type RegistryShutdownResult,
+  type SessionLoadedError,
+  type SessionRegistry,
+  type SessionRegistryOptions,
+  createSessionRegistry,
+} from './session-registry';

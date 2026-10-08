@@ -10,8 +10,9 @@ import {
   type SessionCollection,
   type SessionDocument,
 } from '@touchgrass/session-store/mongodb';
-import { type PersistentServer, hostSession, startPersistentServer } from './persistent-server';
+import { type PersistentServer, startPersistentServer } from './persistent-server';
 import { createPersistentSessions } from './persistent-sessions';
+import { hostSession } from './session-handle';
 import {
   CODE,
   ROUND_MS,
@@ -904,7 +905,7 @@ describe('hasUnsavedChanges', () => {
           );
         }
       }
-      const source = readFileSync(joinPath(directory, 'persistent-server.ts'), 'utf-8').replace(
+      const source = readFileSync(joinPath(directory, 'session-handle.ts'), 'utf-8').replace(
         /\/\*[\s\S]*?\*\/|\/\/.*$/gm,
         '',
       );

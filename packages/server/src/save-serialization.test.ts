@@ -567,7 +567,7 @@ describe('serialising saves adds nothing else', () => {
     const directory = dirname(fileURLToPath(import.meta.url));
     const read = (path: string): string =>
       readFileSync(path, 'utf-8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
-    const server = read(joinPath(directory, 'persistent-server.ts'));
+    const server = read(joinPath(directory, 'session-handle.ts'));
 
     // The state is captured inside the one function that performs a save, after
     // any waiting, and the marker is set from that captured state only.
