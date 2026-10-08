@@ -59,7 +59,7 @@ hostSession(session): { session, room, hostToken }
 
 startPersistentServer({ store, game, port, clock? }): Promise<Result<PersistentServer, …>>
 // game: { create: command } | { load: sessionId }
-// PersistentServer: { session, room, hostToken, port, save(), close() }
+// PersistentServer: { session, room, hostToken, port, save(), hasUnsavedChanges(), close() }
 
 parseServerConfig(env): Result<ServerConfig, ServerConfigError>
 ```
@@ -105,6 +105,52 @@ No join, action, host command, tick, leave, resume or disconnect saves anything.
 session do not know a store exists. So the stored game is whatever it was at the last successful
 save, and a running game is usually ahead of it. If the process stops, everything since the last
 save is lost.
+
+## Knowing whether there is anything to save
+
+```ts
+server.hasUnsavedChanges(): boolean
+```
+
+It answers one question: has the game changed since this server last saved it successfully?
+
+- **It is an in-memory query at the application boundary.** It exists on the `PersistentServer`
+  handle and nowhere else. The session, the room, the store and the persistence lifecycle have no
+  such method and know nothing of it.
+- **It compares two references.** The server keeps the exact `GameState` object that was last
+  saved. A `GameSession` replaces its state object only when the game really changes, so
+  `session.getState() !== lastSavedState` is an exact test. There is no counter, flag or listener.
+- **It does not save, and it does not cause a save.** A true answer does nothing. Saving is still
+  only `save()`.
+- **It is not stored or sent.** It adds nothing to `GameState`, the history, the snapshot or the
+  MongoDB document, and nothing to any message a client receives.
+
+When it is false and when it is true:
+
+| After                                                    | Answer                                     |
+| -------------------------------------------------------- | ------------------------------------------ |
+| Creating a game (its first snapshot has just been saved) | `false`                                    |
+| Loading a stored game                                    | `false`                                    |
+| An accepted action, command, join or leave               | `true`                                     |
+| A refused operation                                      | as before                                  |
+| Time advancing when nothing was due                      | as before                                  |
+| Time advancing when a round ended or something expired   | `true`                                     |
+| A successful `save()`                                    | `false`, unless the game changed during it |
+| A failed `save()`                                        | as before                                  |
+
+**A change during a save is not lost.** `save()` notes the state it is about to save before it waits
+for the store. If the game changes while the store is working, the state that was saved is the
+earlier one, and the answer stays `true` until a later save succeeds. A save that has been sent but
+not yet confirmed still counts as unsaved.
+
+**It speaks only for this server.** It means "this handle has successfully saved this state". It
+does not mean the store still holds it. It cannot see that:
+
+- another process has overwritten the stored snapshot;
+- another process has deleted it;
+- the database's copy differs for any other reason.
+
+There is no optimistic concurrency control, so none of those can be detected.
 
 ## The room is always new
 

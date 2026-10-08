@@ -67,6 +67,12 @@ interface GameSessionSnapshot {
   queue or lock. Nothing in the API returns a promise.
 - **Read-only state.** Each stored state is frozen all the way down. `getState()` can be read and
   passed on; writing to it throws and changes nothing.
+- **The state object changes exactly when the game does.** Every accepted action, command or time
+  advance that changes the game gives a new state object. A refused operation, a time advance when
+  nothing is due, a read and a snapshot all leave `getState()` returning the very same object. So
+  `before !== session.getState()` is an exact test for "the game changed", and code outside this
+  package may rely on it; `@touchgrass/server` does, to know whether a game has unsaved changes. The
+  session itself keeps no revision number and no changed flag.
 - **Independent sessions.** Each session is its own closure. There is no module-level state.
 - **The actor comes from the caller.** `submitAction` takes the actor id as its own argument. The
   intent is the client's message; it cannot name an actor and cannot express a host command.

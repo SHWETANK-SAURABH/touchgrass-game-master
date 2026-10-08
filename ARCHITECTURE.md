@@ -506,6 +506,14 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
   durability per action.
 - **The explicit save is not on the network.** The development server takes `save` typed in its
   terminal. Exposing save, load or delete to clients needs an authentication decision first.
+- **The server knows whether there is anything to save (Phase 5J).** `server.hasUnsavedChanges()`
+  compares the session's current state object with the one that was last saved successfully. A
+  session replaces its state object exactly when the game changes, so the comparison is exact and
+  needs no revision counter, flag or hook in any lower layer. It is a query only: it saves nothing,
+  is stored nowhere, and is not part of `GameState`, the snapshot or the protocol. A state is marked
+  as saved only after the store confirms it, using the state captured before the save was awaited,
+  so a change made while a save is in flight still counts as unsaved. It speaks for this server
+  alone: with no concurrency control, it cannot tell that another process changed what is stored.
 - **Restore means restore.** A loaded game is exactly what was saved. Nothing is advanced, paused or
   reset because time passed while it was stored. What a running game should do about that time is
   undecided.

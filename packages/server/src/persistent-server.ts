@@ -1,5 +1,5 @@
 import { type Clock, type Result, err, ok, systemClock } from '@touchgrass/shared';
-import { contextAt } from '@touchgrass/game-engine';
+import { type GameState, contextAt } from '@touchgrass/game-engine';
 import type { GameSession } from '@touchgrass/game-session';
 import {
   type RealtimeServer,
@@ -28,7 +28,8 @@ import { type CreateSessionError, createPersistentSessions } from './persistent-
  * loaded is the session the room is built around: it is not copied.
  *
  * Saving happens in two places only. Creating a game saves its first snapshot.
- * After that, `save()` saves when it is called. No join, action, host command,
+ * After that, `save()` saves when it is called. `hasUnsavedChanges()` says
+ * whether there is anything to save, and never saves. No join, action, host command,
  * tick, leave, resume or disconnect saves anything; the room does not know a
  * store exists.
  *
@@ -87,6 +88,17 @@ export interface PersistentServer extends HostedSession {
    */
   readonly save: () => Promise<Result<void, SessionPersistenceError>>;
   /**
+   * Whether the game has changed since this server last saved it successfully.
+   *
+   * It is a question, not a trigger: a true answer saves nothing. It compares
+   * the session's current state with the exact state object that was last
+   * saved, which is kept here in memory and nowhere else.
+   *
+   * It speaks only for this server. It does not know whether another process
+   * has overwritten or deleted what is stored.
+   */
+  readonly hasUnsavedChanges: () => boolean;
+  /**
    * Stops listening, closes every connection, then closes the store. It does
    * not save. Calling it again does nothing.
    */
@@ -119,6 +131,12 @@ export async function startPersistentServer(
       : await sessions.create(game.create, contextAt(clock));
   if (!ready.ok) return ready;
 
+  // The state the store is known to hold. A created game has just been saved
+  // and a loaded one has just been read, so at this moment it is the session's
+  // own state. A GameSession replaces its state object only when the game
+  // really changes, so comparing references is an exact test for "changed".
+  let lastSavedState: GameState = ready.value.getState();
+
   const hosted = hostSession(
     ready.value,
     options.createToken ? { createToken: options.createToken } : {},
@@ -140,7 +158,15 @@ export async function startPersistentServer(
   return ok({
     ...hosted,
     port: realtime.port,
-    save: () => sessions.save(hosted.session),
+    async save() {
+      // Taken before the save is awaited. The game may change while the store is
+      // working, and what was saved is this state, not whatever came after.
+      const stateBeingSaved = hosted.session.getState();
+      const saved = await sessions.save(hosted.session);
+      if (saved.ok) lastSavedState = stateBeingSaved;
+      return saved;
+    },
+    hasUnsavedChanges: () => hosted.session.getState() !== lastSavedState,
     async close() {
       if (closed) return;
       closed = true;

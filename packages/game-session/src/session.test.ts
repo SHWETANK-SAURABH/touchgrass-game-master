@@ -628,3 +628,66 @@ describe('the engine is unchanged underneath', () => {
     expect(keys).toEqual(Object.keys(gameStateSchema.shape).sort());
   });
 });
+
+describe('the state object changes exactly when the game does', () => {
+  // Code outside this package relies on this: comparing two results of
+  // getState() with === is how it tells whether a game has changed.
+
+  it('gives a new state object for every accepted change', () => {
+    const session = lobbySession();
+    const seen = new Set<GameState>([session.getState()]);
+
+    unwrap(session.submitAction('p0', READY, at(START)));
+    seen.add(session.getState());
+    unwrap(session.applyCommand({ type: 'REMOVE_PLAYER', playerId: 'p2' }, at(START)));
+    seen.add(session.getState());
+    unwrap(session.submitAction('p1', READY, at(START)));
+    seen.add(session.getState());
+    // The round runs out: time alone changes the game.
+    unwrap(session.advanceTime(at(START + ROUND_MS)));
+    seen.add(session.getState());
+
+    expect(seen.size).toBe(5);
+  });
+
+  it('keeps the very same state object when an operation is refused', () => {
+    const session = runningSession();
+    const before = session.getState();
+    const { r1, r2 } = tagRoles(session);
+
+    expect(session.submitAction(r1, tag(r2), at(NOW)).ok).toBe(false);
+    expect(session.submitAction('ghost', READY, at(NOW)).ok).toBe(false);
+    expect(session.submitAction(r1, { type: 'NOPE' }, at(NOW)).ok).toBe(false);
+    expect(session.applyCommand({ type: 'RESUME_SESSION' }, at(NOW)).ok).toBe(false);
+    expect(session.applyCommand({ type: 'SET_SCORE' } as never, at(NOW)).ok).toBe(false);
+    expect(session.advanceTime(at(START - 1)).ok).toBe(false);
+
+    expect(session.getState()).toBe(before);
+  });
+
+  it('keeps the very same state object when time advances and nothing is due', () => {
+    const lobby = lobbySession();
+    const lobbyBefore = lobby.getState();
+    expect(unwrap(lobby.advanceTime(at(60_000))).state).toBe(lobbyBefore);
+    expect(lobby.getState()).toBe(lobbyBefore);
+
+    const running = runningSession();
+    const before = running.getState();
+    for (const ms of [START, NOW, START + ROUND_MS - 1]) {
+      expect(unwrap(running.advanceTime(at(ms))).state).toBe(before);
+    }
+    expect(running.getState()).toBe(before);
+    // One millisecond later the round is over, and the object is a new one.
+    unwrap(running.advanceTime(at(START + ROUND_MS)));
+    expect(running.getState()).not.toBe(before);
+  });
+
+  it('is not changed by reading the state or taking a snapshot', () => {
+    const session = runningSession();
+    const before = session.getState();
+    session.getState();
+    session.snapshot();
+    expect(session.snapshot().state).toBe(before);
+    expect(session.getState()).toBe(before);
+  });
+});
