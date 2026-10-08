@@ -499,11 +499,11 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
 - **Creating a game saves it once, or fails.** `create` reports success only if the first snapshot
   was saved. If it was not, no session is returned and nothing is retried. An id that is already
   stored is refused rather than overwritten.
-- **Persistence is explicit.** After creation a game is saved only when `save()` is called. No join,
-  action, host command, tick, leave, resume or disconnect saves anything, and the room and the
-  session still do not know a store exists. A running game is therefore usually ahead of what is
-  stored, and whatever happened since the last save is lost if the process stops. There is no
-  durability per action.
+- **Persistence is explicit.** After creation a game is saved only when a caller asks: by `save()`,
+  or by `shutdown()` on the way out. No join, action, host command, tick, leave, resume or disconnect
+  saves anything, and the room and the session still do not know a store exists. A running game is
+  therefore usually ahead of what is stored, and whatever happened since the last save is lost if
+  the process stops without `shutdown()`. There is no autosave and no durability per action.
 - **The explicit save is not on the network.** The development server takes `save` typed in its
   terminal. Exposing save, load or delete to clients needs an authentication decision first.
 - **The server knows whether there is anything to save (Phase 5J).** `server.hasUnsavedChanges()`
@@ -522,7 +522,14 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
   game, and no token issued before the restore works.
 - **One room, one session, no registry.** A loaded session is the one the room is built around. The
   server layer keeps no table of sessions, rooms or stores.
-- **Shutdown** stops the realtime server and then closes the store. It does not save.
+- **Two ways to stop (Phase 5K).** `close()` is resource shutdown without persistence: it never
+  saves, and unsaved changes are discarded. `shutdown()` is graceful and persistence-aware, in a
+  fixed order: the realtime server stops, the game is saved once if `hasUnsavedChanges()` is true,
+  and the store closes. Stopping the realtime server first means no client can change the game
+  during the final save. `shutdown()` returns the result of that save. A failed final save still
+  closes the store, is returned to the caller, is not retried, and leaves the game marked unsaved.
+  The store is closed even when the realtime server fails to stop. The development server stops with
+  `shutdown()` on `quit` and Ctrl+C.
 
 The persistent server needs a MongoDB server to run. The tests do not: they use the in-memory store,
 and the suites that use a real MongoDB server run only when `MONGODB_TEST_URI` is set. No MongoDB

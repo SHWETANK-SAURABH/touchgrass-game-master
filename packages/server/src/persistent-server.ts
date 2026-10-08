@@ -28,8 +28,9 @@ import { type CreateSessionError, createPersistentSessions } from './persistent-
  * loaded is the session the room is built around: it is not copied.
  *
  * Saving happens in two places only. Creating a game saves its first snapshot.
- * After that, `save()` saves when it is called. `hasUnsavedChanges()` says
- * whether there is anything to save, and never saves. No join, action, host command,
+ * After that, `save()` saves when it is called, and `shutdown()` saves once on
+ * the way out if there is anything unsaved. `hasUnsavedChanges()` says whether
+ * there is, and never saves. `close()` never saves. No join, action, host command,
  * tick, leave, resume or disconnect saves anything; the room does not know a
  * store exists.
  *
@@ -100,9 +101,31 @@ export interface PersistentServer extends HostedSession {
   readonly hasUnsavedChanges: () => boolean;
   /**
    * Stops listening, closes every connection, then closes the store. It does
-   * not save. Calling it again does nothing.
+   * not save: whatever has changed since the last save is discarded. Calling it
+   * again, or after `shutdown`, does nothing.
+   *
+   * The store is closed even if stopping the realtime server fails; the failure
+   * is then thrown.
    */
   readonly close: () => Promise<void>;
+  /**
+   * Stops gracefully, keeping the game:
+   *
+   *   1. stops the realtime server, so no client can change the game any more;
+   *   2. saves the game, once, if it has unsaved changes;
+   *   3. closes the store.
+   *
+   * It returns the result of that final save, or success if nothing needed
+   * saving. If the save fails the store is still closed, the failure is
+   * returned, nothing is retried, and `hasUnsavedChanges()` stays true.
+   *
+   * Calling it again returns the first call's result and does nothing more.
+   * After `close` it does nothing: the store is closed and nothing can be saved.
+   *
+   * The store is closed even if stopping the realtime server fails; the final
+   * save is still attempted, and the failure is then thrown.
+   */
+  readonly shutdown: () => Promise<Result<void, SessionPersistenceError>>;
 }
 
 export type PersistentServerError =
@@ -154,24 +177,62 @@ export async function startPersistentServer(
     return err({ code: 'SERVER_NOT_STARTED', message: 'The server could not start listening.' });
   }
 
+  const save = async (): Promise<Result<void, SessionPersistenceError>> => {
+    // Taken before the save is awaited. The game may change while the store is
+    // working, and what was saved is this state, not whatever came after.
+    const stateBeingSaved = hosted.session.getState();
+    const saved = await sessions.save(hosted.session);
+    if (saved.ok) lastSavedState = stateBeingSaved;
+    return saved;
+  };
+  const hasUnsavedChanges = (): boolean => hosted.session.getState() !== lastSavedState;
+
+  /**
+   * Stops the realtime server and closes the store, with one save in between if
+   * asked for and needed. The store is closed whatever happens before it. If the
+   * realtime server or the store fails to close, the first such failure is
+   * thrown once everything has been attempted.
+   */
+  const stop = async (finalSave: boolean): Promise<Result<void, SessionPersistenceError>> => {
+    let failure: { readonly error: unknown } | undefined;
+    try {
+      await realtime.close();
+    } catch (error) {
+      failure = { error };
+    }
+
+    let saved: Result<void, SessionPersistenceError> = ok(undefined);
+    if (finalSave && hasUnsavedChanges()) saved = await save();
+
+    try {
+      await store.close?.();
+    } catch (error) {
+      failure ??= { error };
+    }
+    if (failure) throw failure.error;
+    return saved;
+  };
+
   let closed = false;
+  let shuttingDown: Promise<Result<void, SessionPersistenceError>> | undefined;
+
   return ok({
     ...hosted,
     port: realtime.port,
-    async save() {
-      // Taken before the save is awaited. The game may change while the store is
-      // working, and what was saved is this state, not whatever came after.
-      const stateBeingSaved = hosted.session.getState();
-      const saved = await sessions.save(hosted.session);
-      if (saved.ok) lastSavedState = stateBeingSaved;
-      return saved;
-    },
-    hasUnsavedChanges: () => hosted.session.getState() !== lastSavedState,
+    save,
+    hasUnsavedChanges,
     async close() {
       if (closed) return;
       closed = true;
-      await realtime.close();
-      await store.close?.();
+      await stop(false);
+    },
+    shutdown() {
+      if (shuttingDown) return shuttingDown;
+      // Already closed without saving. The store is gone; there is nothing to do.
+      if (closed) return Promise.resolve(ok(undefined));
+      closed = true;
+      shuttingDown = stop(true);
+      return shuttingDown;
     },
   });
 }

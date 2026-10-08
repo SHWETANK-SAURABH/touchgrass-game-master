@@ -42,8 +42,12 @@ MONGODB_URI=mongodb://127.0.0.1:27017 npm run server:dev
 It prints the session id, the join code and a host token. To bring the same game back later, start
 it again with `SESSION_ID` set to that id.
 
-A new game is saved once, when it is created. After that **nothing is saved unless you type `save`**
-in the terminal. `quit` stops the server; stopping does not save.
+A new game is saved once, when it is created. While it runs, **nothing is saved unless you type
+`save`** in the terminal.
+
+`quit` and Ctrl+C stop the server gracefully, with `shutdown()`: the game is saved once if it has
+unsaved changes, and the server says which happened. If that final save fails, the error is printed
+and the process exits with a non-zero status. Killing the process any other way saves nothing.
 
 The terminal is the only way to ask for a save. There is no network command for it, because nothing
 authenticates who would be asking. Exposing save, load or delete to clients needs an authentication
@@ -59,7 +63,8 @@ hostSession(session): { session, room, hostToken }
 
 startPersistentServer({ store, game, port, clock? }): Promise<Result<PersistentServer, …>>
 // game: { create: command } | { load: sessionId }
-// PersistentServer: { session, room, hostToken, port, save(), hasUnsavedChanges(), close() }
+// PersistentServer: { session, room, hostToken, port, save(), hasUnsavedChanges(),
+//                     close(), shutdown() }
 
 parseServerConfig(env): Result<ServerConfig, ServerConfigError>
 ```
@@ -99,12 +104,13 @@ Errors are the persistence lifecycle's own: `INVALID_SESSION_ID`, `SESSION_NOT_F
 
 ## Persistence is explicit
 
-Saving happens in two places only: once when a game is created, and when `save()` is called.
+Saving happens in three places only, each asked for by a caller: once when a game is created, when
+`save()` is called, and once inside `shutdown()` if the game has unsaved changes.
 
 No join, action, host command, tick, leave, resume or disconnect saves anything. The room and the
 session do not know a store exists. So the stored game is whatever it was at the last successful
-save, and a running game is usually ahead of it. If the process stops, everything since the last
-save is lost.
+save, and a running game is usually ahead of it. If the process stops without `shutdown()`, whether
+by `close()`, a crash or a kill, everything since the last save is lost. There is no autosave.
 
 ## Knowing whether there is anything to save
 
@@ -152,6 +158,60 @@ does not mean the store still holds it. It cannot see that:
 
 There is no optimistic concurrency control, so none of those can be detected.
 
+## Stopping: `close()` and `shutdown()`
+
+There are two ways to stop, and the difference is deliberate.
+
+```ts
+await server.close(); //    stop, without persistence
+await server.shutdown(); // stop gracefully, keeping the game
+```
+
+|                           | `close()` | `shutdown()`                 |
+| ------------------------- | --------- | ---------------------------- |
+| Stops the realtime server | yes       | yes, first                   |
+| Saves unsaved changes     | **never** | once, if there are any       |
+| Closes the store          | yes       | yes, last                    |
+| Returns                   | nothing   | the result of the final save |
+
+**`close()` is resource shutdown without persistence.** It does not save and does not look at
+whether there is anything to save. Whatever changed since the last save is discarded.
+
+**`shutdown()` is graceful, persistence-aware shutdown.** Its order is fixed:
+
+```
+realtime server stops  →  save, if there are unsaved changes  →  store closes
+```
+
+- The realtime server is stopped first, so no client message can change the game while the final
+  state is being saved. The save does not begin until it has finished stopping.
+- A game with unsaved changes is saved, through the same `save()` as an explicit save.
+- A game with nothing unsaved is not saved: the store receives no save call.
+- The save happens at most once. It is never retried.
+- The result of the final save is returned, or success if nothing needed saving.
+
+**If the final save fails,** the store is still closed, the persistence error is returned to the
+caller, and `hasUnsavedChanges()` stays true. Nothing pretends the game was kept. Because the store
+is closed, it cannot be tried again on this server.
+
+**If something will not close.** The store is always closed, whatever happens before it. If the
+realtime server fails to stop, `close()` still closes the store, and `shutdown()` still attempts the
+final save and closes the store; the failure is then thrown. If the store fails to close, that is
+thrown. If both fail, the first is thrown. After a `shutdown()` that threw, `hasUnsavedChanges()`
+still says whether the game was saved.
+
+**Calling them more than once.**
+
+- `shutdown()` again returns the first call's result and does nothing more: no second save, nothing
+  closed twice.
+- `close()` after `shutdown()`, or `close()` again, does nothing.
+- `shutdown()` after `close()` does nothing and reports success. It cannot save, because the store
+  is already closed; `hasUnsavedChanges()` still tells whether anything was lost.
+
+`shutdown()` is not autosave. It runs when a caller calls it, starts no timer, and adds nothing to
+what happens while a game is running. How long the final save may take is whatever the store allows;
+with an unreachable MongoDB server that can be the driver's full wait.
+
 ## The room is always new
 
 Bearer tokens and connections are not part of a snapshot, so they are never stored.
@@ -172,8 +232,8 @@ The application creates the store and owns it.
   `createMongoSessionStore`. That is the only place the environment is read and the only place a
   MongoDB store is made. The store package reads no environment variable.
 - `startPersistentServer` takes any `SessionStore`, so the tests use the in-memory one.
-- `close()` stops the realtime server and then closes the store. A server that failed to start does
-  not close the store it was given.
+- `close()` and `shutdown()` both end by closing the store, even if stopping the realtime server
+  failed. A server that failed to start does not close the store it was given.
 
 ## No registry
 

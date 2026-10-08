@@ -18,8 +18,13 @@ import { startPersistentServer } from './persistent-server';
  *   SESSION_ID           load this stored session instead of creating one
  *
  * A new game is saved once, when it is created. After that nothing is saved
- * unless you type `save` here. This terminal is the only way to ask: there is
- * no network command for it, because nothing authenticates who would be asking.
+ * while it runs unless you type `save` here. This terminal is the only way to
+ * ask: there is no network command for it, because nothing authenticates who
+ * would be asking.
+ *
+ * `quit` and Ctrl+C stop gracefully: the game is saved once if it has unsaved
+ * changes. If that save fails, the error is printed and the exit status is
+ * non-zero.
  *
  * It is not a deployment: one game, no authentication, an unencrypted socket,
  * and nothing advances time.
@@ -71,11 +76,27 @@ console.log(`Game: ${state.gameId}   Status: ${state.status}   Join code: ${stat
 // Printed on purpose, here only: this is how a developer gets the host role
 // locally. It is new every time the server starts, and it is not stored.
 console.log(`Host token: ${server.hostToken}`);
-console.log('Nothing is saved automatically. Type "save" to save, "quit" to stop.');
+console.log('Nothing is saved while it runs. Type "save" to save, "quit" to save and stop.');
 
+/**
+ * Stops gracefully: the realtime server first, then one save if the game has
+ * unsaved changes, then the store. A failed final save is reported and the
+ * process exits with a non-zero status.
+ */
 const shutdown = async (): Promise<void> => {
-  await server.close();
-  process.exit(0);
+  const unsaved = server.hasUnsavedChanges();
+  try {
+    const result = await server.shutdown();
+    if (!result.ok) {
+      console.error(`The final save failed: ${result.error.code}: ${result.error.message}`);
+      process.exit(1);
+    }
+    console.log(unsaved ? 'Unsaved changes were saved.' : 'Nothing to save.');
+    process.exit(0);
+  } catch {
+    console.error('The server did not stop cleanly.');
+    process.exit(1);
+  }
 };
 
 const terminal = createInterface({ input: process.stdin });
