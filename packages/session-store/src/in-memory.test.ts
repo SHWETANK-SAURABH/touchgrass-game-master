@@ -551,6 +551,7 @@ describe('a session without a store', () => {
     expect(Object.keys(game).sort()).toEqual([
       'advanceTime',
       'applyCommand',
+      'applyEvent',
       'getState',
       'id',
       'snapshot',

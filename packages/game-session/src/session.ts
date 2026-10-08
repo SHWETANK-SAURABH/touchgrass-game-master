@@ -6,7 +6,9 @@ import {
   type HistoryEntry,
   type PlayerActionOutcome,
   type SessionCommand,
+  type ValidatedGameEvent,
   advanceTime,
+  applyValidatedEvent,
   createSession,
   createSessionCommandSchema,
   engineCommandSchema,
@@ -120,6 +122,24 @@ export interface GameSession {
   readonly advanceTime: (ctx: EngineContext) => Result<SessionUpdate, EngineError>;
 
   /**
+   * Applies an external game event that the engine has already validated
+   * against this game as it stands.
+   *
+   * The session decides nothing here. The engine's `applyValidatedEvent` does:
+   * it refuses a value it did not issue itself, one issued for another game,
+   * and one issued before the game last changed, and it validates the event
+   * again as it applies it. On a refusal the game is exactly as it was.
+   *
+   * Trusted callers only. Whether an event is safe is not checked here: a
+   * caller acting for a Game Master must pass only what the safety package has
+   * released from a clearance.
+   */
+  readonly applyEvent: (
+    validated: ValidatedGameEvent,
+    ctx: EngineContext,
+  ) => Result<SessionUpdate, EngineError>;
+
+  /**
    * Applies a host command: a player joining or leaving, a phase change, pause,
    * resume, abort.
    *
@@ -208,6 +228,12 @@ function hold(initial: GameState): GameSession {
 
     advanceTime(timeCtx) {
       const next = advanceTime(current, timeCtx);
+      if (!next.ok) return next;
+      return ok(replace(next.value));
+    },
+
+    applyEvent(validated, eventCtx) {
+      const next = applyValidatedEvent(current, validated, eventCtx);
       if (!next.ok) return next;
       return ok(replace(next.value));
     },

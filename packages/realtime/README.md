@@ -216,6 +216,24 @@ checks, the same broadcasts.
 - **Broadcasts stay in their room.** A room writes only to its own connections, so nothing one
   session does reaches a connection of another.
 
+### Trusted server calls: `tick`, `applyEvent`, `onUpdate`
+
+```ts
+room.tick(ctx); //                    advance time
+room.applyEvent(validated, ctx); //   apply an external event the engine validated
+createRoom({ session, onUpdate: (update) => { … } });
+```
+
+None of these is reachable from a client message. `applyEvent` has the session apply an event the
+engine has already validated and, if the engine accepts it, broadcasts the result with the same
+`update` message as any other change. The room does not judge the event: the engine decides whether
+it is legal and still current, and a caller acting for a Game Master must pass only what the safety
+package released. A closed room refuses.
+
+`onUpdate` is told each change the room broadcasts, once, with the entries it added and the state
+after it, whether or not anyone is connected. It is what the connections are sent. A listener
+cannot alter it, and one that throws is ignored.
+
 ### Knowing whether a room is in use
 
 ```ts
@@ -274,7 +292,8 @@ the session again means making a new room.
 - **Not deployed.** Next.js cannot accept a WebSocket upgrade in a route handler, so this needs its
   own process or a custom server; neither exists. The Docker image does not start it.
 - **Not durable.** State and tokens are in one process's memory. A restart ends the game.
-- **Not connected to the Game Master.**
+- **Not connected to the Game Master.** The room does not know one exists. It offers trusted
+  server code two things a Game Master integration uses: `applyEvent`, and `onUpdate`.
 
 ## Dependencies
 

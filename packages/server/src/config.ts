@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { type Result, err, ok } from '@touchgrass/shared';
+import { DEFAULT_GAME_MASTER_TIMEOUT_MS } from './game-master-turns';
 import { DEFAULT_FINISHED_IDLE_MS, DEFAULT_SESSION_IDLE_MS } from './session-registry';
 
 /**
@@ -112,5 +113,53 @@ export function parseLifecycleConfig(
     idleMs: parsed.data.SESSION_IDLE_MS,
     finishedIdleMs: parsed.data.SESSION_FINISHED_IDLE_MS,
     sweepMs: parsed.data.SESSION_SWEEP_MS,
+  });
+}
+
+const flag = z
+  .enum(['true', 'false', '1', '0'], { error: 'must be true or false' })
+  .default('false')
+  .transform((value) => value === 'true' || value === '1');
+
+const gameMasterConfigSchema = z.object({
+  GAME_MASTER_ENABLED: flag,
+  GAME_MASTER_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(300_000)
+    .default(DEFAULT_GAME_MASTER_TIMEOUT_MS),
+});
+
+/** Whether the multi-session server has a Game Master, and how long a turn may take. */
+export interface GameMasterConfig {
+  /** Off unless asked for: the games need no model to run. */
+  readonly enabled: boolean;
+  /** How long one turn may wait for the model. */
+  readonly timeoutMs: number;
+}
+
+/**
+ * The Game Master switch for the multi-session server. Which model, and where
+ * it runs, are the shared `MODEL_*` settings and are not read here.
+ */
+export function parseGameMasterConfig(
+  env: Readonly<Record<string, string | undefined>>,
+): Result<GameMasterConfig, ServerConfigError> {
+  const blank = (value: string | undefined) =>
+    value === undefined || value.trim() === '' ? undefined : value.trim().toLowerCase();
+  const parsed = gameMasterConfigSchema.safeParse({
+    GAME_MASTER_ENABLED: blank(env.GAME_MASTER_ENABLED),
+    GAME_MASTER_TIMEOUT_MS: blank(env.GAME_MASTER_TIMEOUT_MS),
+  });
+  if (!parsed.success) {
+    return err({
+      code: 'INVALID_CONFIGURATION',
+      issues: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+    });
+  }
+  return ok({
+    enabled: parsed.data.GAME_MASTER_ENABLED,
+    timeoutMs: parsed.data.GAME_MASTER_TIMEOUT_MS,
   });
 }

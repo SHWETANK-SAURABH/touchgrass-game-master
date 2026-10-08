@@ -4,6 +4,13 @@ import {
   type RoutedRealtimeServer,
   createRoutedRealtimeServer,
 } from '@touchgrass/realtime';
+import type { SessionUpdate } from '@touchgrass/game-session';
+import {
+  type GameMasterAudit,
+  type GameMasterTurnsOptions,
+  createGameMasterTurns,
+  gameMasterTriggerFor,
+} from './game-master-turns';
 import type { ClosableSessionStore } from './persistent-server';
 import {
   type RegistryShutdownResult,
@@ -55,6 +62,11 @@ export interface SessionServerOptions {
   readonly finishedIdleMs?: number;
   /** Told what happens to sessions. See the registry's `onEvent`. */
   readonly onEvent?: (event: SessionLifecycleEvent) => void;
+  /**
+   * The Game Master, if there is to be one. Left out, no model is ever asked
+   * and the games run exactly as they do without it.
+   */
+  readonly gameMaster?: GameMasterTurnsOptions;
 }
 
 export interface SessionServer {
@@ -68,6 +80,13 @@ export interface SessionServer {
   /** How many sockets are open, with a session or not. */
   readonly socketCount: () => number;
   /**
+   * Takes one Game Master turn for a session that is loaded here, for trusted
+   * server code. It resolves with what the turn did. Nothing is loaded for it:
+   * a session that is not in memory gets no turn. With no Game Master
+   * configured, no model is asked.
+   */
+  readonly runGameMaster: (sessionId: string) => Promise<GameMasterAudit | GameMasterNotRun>;
+  /**
    * Stops gracefully:
    *
    *   1. new connections are refused with SESSION_CLOSED;
@@ -80,6 +99,13 @@ export interface SessionServer {
    * everything else has been done.
    */
   readonly shutdown: () => Promise<RegistryShutdownResult>;
+}
+
+/** A Game Master turn that was not taken, and why. No model was asked. */
+export interface GameMasterNotRun {
+  readonly outcome: 'SKIPPED';
+  readonly sessionId: string;
+  readonly code: 'GAME_MASTER_DISABLED' | 'SESSION_NOT_LOADED' | 'SERVER_STOPPING';
 }
 
 export interface SessionServerError {
@@ -96,7 +122,15 @@ export interface SessionServerError {
 export async function startSessionServer(
   options: SessionServerOptions,
 ): Promise<Result<SessionServer, SessionServerError>> {
-  const registry = createSessionRegistry({
+  const turns = options.gameMaster
+    ? createGameMasterTurns({
+        ...(options.clock ? { clock: options.clock } : {}),
+        ...options.gameMaster,
+      })
+    : undefined;
+  let stopping: Promise<RegistryShutdownResult> | undefined;
+
+  const registry: SessionRegistry = createSessionRegistry({
     store: options.store,
     ...(options.createToken ? { createToken: options.createToken } : {}),
     ...(options.tokenKey ? { tokenKey: options.tokenKey } : {}),
@@ -104,8 +138,18 @@ export async function startSessionServer(
     ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
     ...(options.finishedIdleMs === undefined ? {} : { finishedIdleMs: options.finishedIdleMs }),
     ...(options.onEvent ? { onEvent: options.onEvent } : {}),
+    // The trigger policy is applied here, to what the engine recorded. The
+    // model has no say in whether or when it is asked.
+    ...(turns
+      ? {
+          onUpdate: (sessionId: string, update: SessionUpdate) => {
+            const trigger = gameMasterTriggerFor(update);
+            const handle = trigger && !stopping ? registry.get(sessionId) : undefined;
+            if (trigger && handle) void turns.run(handle, trigger);
+          },
+        }
+      : {}),
   });
-  let stopping: Promise<RegistryShutdownResult> | undefined;
 
   /** The room of a session: the one already loaded, or else loaded now. */
   const route = async (sessionId: string) => {
@@ -149,6 +193,14 @@ export async function startSessionServer(
     port: realtime.port,
     registry,
     socketCount: realtime.socketCount,
+    runGameMaster(sessionId) {
+      const notRun = (code: GameMasterNotRun['code']): Promise<GameMasterNotRun> =>
+        Promise.resolve({ outcome: 'SKIPPED', sessionId, code });
+      if (!turns) return notRun('GAME_MASTER_DISABLED');
+      if (stopping) return notRun('SERVER_STOPPING');
+      const handle = registry.get(sessionId);
+      return handle ? turns.run(handle, 'manual') : notRun('SESSION_NOT_LOADED');
+    },
     shutdown() {
       stopping ??= stop();
       return stopping;

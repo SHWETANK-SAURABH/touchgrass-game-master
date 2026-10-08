@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fixedClock } from '@touchgrass/shared';
-import { type EngineContext, contextAt } from '@touchgrass/game-engine';
+import { type EngineContext, contextAt, validateExternalEvent } from '@touchgrass/game-engine';
 import { type GameSession, createGameSession } from '@touchgrass/game-session';
 import { type ServerMessage, serverMessageSchema } from './protocol';
 import { type Room, type RoomConnection, createRoom } from './room';
@@ -299,5 +299,119 @@ describe('being told how many connections a room has', () => {
     expect(room.connectionCount()).toBe(1);
     room.disconnect(who);
     expect(room.connectionCount()).toBe(0);
+  });
+});
+
+describe('trusted code applying a validated event through a room', () => {
+  const zone = {
+    type: 'ZONE_CHANGE',
+    modifier: 'SAFE_ZONE',
+    zone: 'the bench',
+    durationSeconds: 60,
+  };
+
+  /** A running game with three joined players, the host, and a record of what the room reported. */
+  function playing() {
+    const session = newSession();
+    const updates: { entries: number; status: string }[] = [];
+    const room = createRoom({
+      session,
+      hostToken: 'host-token',
+      onUpdate: (update) =>
+        updates.push({ entries: update.entries.length, status: update.state.status }),
+    });
+    const players = [connection(), connection(), connection()];
+    for (const [index, who] of players.entries()) join(room, who, `Player ${index}`);
+    for (const who of players) {
+      send(room, who, { type: 'action', intent: { type: 'PLAYER_READY' } }, 1_000);
+    }
+    const host = connection();
+    send(room, host, { type: 'host_auth', token: 'host-token' }, 1_000);
+    for (const who of [...players, host]) who.take();
+    const validate = (event: unknown = zone) => {
+      const validated = validateExternalEvent(session.getState(), event, 'game-master', at(6_000));
+      if (!validated.ok) throw new Error('fixture failed');
+      return validated.value;
+    };
+    return { session, room, players, host, updates, validate };
+  }
+
+  it('has the session apply it and tells every connection, as for any other change', () => {
+    const { session, room, players, host, validate } = playing();
+    const applied = room.applyEvent(validate(), at(6_000));
+    expect(applied.ok).toBe(true);
+    expect(session.getState().activeModifiers).toHaveLength(1);
+    for (const who of [...players, host]) {
+      const heard = who.take();
+      expect(heard.map((message) => message.type)).toEqual(['update']);
+      expect(JSON.stringify(heard)).toContain('the bench');
+    }
+  });
+
+  it('tells nobody and changes nothing when the engine refuses', () => {
+    const { session, room, players } = playing();
+    const before = session.getState();
+    const refused = room.applyEvent({ event: zone } as never, at(6_000));
+    expect(refused.ok).toBe(false);
+    expect(session.getState()).toBe(before);
+    for (const who of players) expect(who.take()).toEqual([]);
+  });
+
+  it('refuses once the room is closed, and changes nothing', () => {
+    const { session, room, validate } = playing();
+    const validated = validate();
+    room.close();
+    const before = session.getState();
+    const refused = room.applyEvent(validated, at(6_000));
+    expect(!refused.ok && refused.error.message).toBe('The room is closed.');
+    expect(session.getState()).toBe(before);
+  });
+
+  it('cannot be reached by anything a client sends', () => {
+    const { session, room, players, host } = playing();
+    const before = session.getState();
+    for (const who of [players[0] as TestConnection, host]) {
+      send(room, who, { type: 'apply_event', event: zone }, 6_000);
+      send(room, who, { type: 'host_command', command: zone }, 6_000);
+      send(room, who, { type: 'action', intent: zone }, 6_000);
+    }
+    expect(session.getState()).toBe(before);
+    expect(session.getState().activeModifiers).toEqual([]);
+  });
+
+  it('reports each broadcast change once, with what was added, whoever caused it', () => {
+    const { room, updates, validate } = playing();
+    // Three joins, then three readies, the last of which started the round.
+    expect(updates.map((update) => update.status)).toEqual([
+      'lobby',
+      'lobby',
+      'lobby',
+      'lobby',
+      'lobby',
+      'active',
+    ]);
+    const before = updates.length;
+    room.applyEvent(validate(), at(6_000));
+    expect(updates).toHaveLength(before + 1);
+    expect(updates.at(-1)).toEqual({ entries: 1, status: 'active' });
+    // A refusal and a tick that changes nothing are not changes.
+    room.applyEvent({} as never, at(6_000));
+    room.tick(at(6_500));
+    expect(updates).toHaveLength(before + 1);
+  });
+
+  it('carries on when the listener throws', () => {
+    const session = newSession();
+    const room = createRoom({
+      session,
+      onUpdate: () => {
+        throw new Error('the listener broke');
+      },
+    });
+    const [one, two] = [connection(), connection()];
+    join(room, one, 'Ada');
+    one.take();
+    join(room, two, 'Bo');
+    expect(one.take().map((message) => message.type)).toEqual(['update']);
   });
 });

@@ -95,4 +95,15 @@ policy. It can make a session stricter; it cannot switch a check off or cause an
 
 ## Not implemented yet
 
-Anything that decides when to ask the Game Master: nothing calls `runGameMasterTurn` on its own.
+Nothing in this package decides when to ask the Game Master, and nothing here calls
+`runGameMasterTurn` on its own. For a live session that decision, and the path from an applied
+event to the room and the store, are in `@touchgrass/server` (`game-master-turns.ts`).
+
+Two things this package provides for that:
+
+- `handOffProposalTo(target, proposal, ctx, safety)` is the same hand-off for something that holds
+  a game, such as a live session. It validates against the target's state at the moment of the
+  call and hands the target only what the safety package released. `handOffProposal` is this
+  function for a plain state.
+- The view shown to the model never contains the join code. The engine's first history summary
+  names it, so it is replaced with `[join code]` when the view is built.

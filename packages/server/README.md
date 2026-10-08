@@ -84,6 +84,9 @@ Sessions are made and managed from its terminal, because nothing authenticates a
 | `evict <id>`      | Releases one from memory, saving it first if needed                        |
 | `quit`            | Saves what is unsaved and stops. Ctrl+C does the same                      |
 
+With `GAME_MASTER_ENABLED=true` the games get a Game Master (see [The Game Master](#the-game-master));
+`gm <id>` takes one turn for a session by hand. It is off by default and the server needs no model.
+
 It prints one line for each thing that happens to a session (`created`, `loaded`, `idle`,
 `eviction_started`, `evicted`, `eviction_failed`, `unloaded`) with the session id and, for a
 failure, an error code. It never prints a player token or anything from a game. A stored session
@@ -112,8 +115,11 @@ createSessionRegistry({ store, clock?, idleMs?, finishedIdleMs?, onEvent? }): Se
 // { create(command, ctx), load(sessionId), get(sessionId), delete(sessionId),
 //   evict(sessionId), evictIdle(), sessions(), shutdown() }
 
-startSessionServer({ store, port, clock?, idleMs?, … }): Promise<Result<SessionServer, …>>
-// SessionServer: { port, registry, socketCount(), shutdown() }
+startSessionServer({ store, port, clock?, idleMs?, gameMaster?, … }): Promise<Result<SessionServer, …>>
+// SessionServer: { port, registry, socketCount(), runGameMaster(sessionId), shutdown() }
+
+createGameMasterTurns({ gameMaster, clock?, timeoutMs?, safety?, onAudit? }): GameMasterTurns
+// { run(handle, trigger) }
 
 parseServerConfig(env): Result<ServerConfig, ServerConfigError>
 parseLifecycleConfig(env): Result<LifecycleConfig, ServerConfigError>
@@ -485,6 +491,47 @@ closed. It returns the registry's result, and calling it again returns the same 
 a session id can connect to it, which also loads it if it is stored. It advances no time, saves
 nothing on its own, and has no timer: sessions are evicted when something calls
 `server.registry.evictIdle()`, as `npm run sessions:dev` does.
+
+## The Game Master
+
+```ts
+startSessionServer({ store, port, gameMaster: { gameMaster, timeoutMs?, safety?, onAudit? } });
+await server.runGameMaster(sessionId); // one turn now, for a loaded session
+```
+
+With a `gameMaster` option, the server asks the Game Master for one proposal when a round begins
+in any loaded session. Without it, no model is ever asked and everything else is unchanged.
+
+```
+round begins (engine)  →  Game Master proposes  →  schema  →  engine: legal?  →  safety
+   →  engine applies, through the room  →  room broadcasts  →  handle.save()
+```
+
+- **The application decides when.** A turn is taken when a broadcast change contains the engine's
+  `ROUND_START`, or when trusted code calls `runGameMaster`. Nothing polls, and the Game Master's
+  own event never triggers another turn.
+- **The model only proposes.** It is given a read-only view of the game and returns a value. It has
+  no tools and is never handed a session, a room, a store or a socket.
+- **One way into the game.** A proposal reaches the game only through the AI package's hand-off,
+  which passes it to the engine's validator and then the safety validator, and hands the room's
+  `applyEvent` only what the safety package released. A refusal at any step changes nothing, is not
+  broadcast and is not saved.
+- **A failed turn is not a failed game.** A model that is unreachable, slow or wrong ends the turn.
+  Players and the host are unaffected.
+- **Per session, in order.** One session's turns run one at a time. Different sessions do not wait
+  for each other.
+- **It fits the lifecycle.** A turn is not taken for a closed session or a game that is not
+  running. A waiting model does not keep a session in memory. An answer that arrives after its
+  session was unloaded is dropped, and a turn never loads a session.
+- **Saved when applied.** After an event is applied the handle is saved. This is the one place a
+  save follows a change without a caller asking for that save; it is asked for by the turn.
+
+`runGameMaster` resolves with the turn's record, or with why no turn was taken
+(`GAME_MASTER_DISABLED`, `SESSION_NOT_LOADED`, `SERVER_STOPPING`).
+
+`npm run sessions:dev` turns it on with `GAME_MASTER_ENABLED=true`, uses the shared `MODEL_*`
+settings, prints one line per turn, and has a `gm <id>` command. The full description, the
+configuration and the failure table are in [AI.md](../../AI.md#the-game-master-in-a-live-game).
 
 ## Session lifecycle and eviction
 

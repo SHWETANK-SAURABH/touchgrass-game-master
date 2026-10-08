@@ -268,6 +268,7 @@ order give the same roles on any host.
 | Reconnect with `resume`, across a reload          | Phase 5O: player tokens worked out from a key, never stored      |
 | Idle and finished sessions evicted from memory    | Phase 5P: `evict`, `evictIdle`; saved first, never deleted       |
 | Many games, development entry point               | Phase 5P: `npm run sessions:dev`                                 |
+| Game Master in live games                         | `GAME_MASTER_ENABLED`; asked at round start; off by default      |
 | Authentication, token rotation                    | Later                                                            |
 
 ---
@@ -620,6 +621,31 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
     unloaded; the store closes; the listener stops.
   - **Still one process.** No coordination between processes, no cap on loaded sessions, no forced
     eviction, and no game clock for a session nobody is connected to.
+- **The Game Master in a live game.** The multi-session server can be given a Game Master. The
+  authoritative path is unchanged and now runs end to end:
+  `game state → Game Master → proposal → schema → engine legality → deterministic safety → engine →
+realtime broadcast → persistence`.
+  - **Application-owned triggers.** A turn is taken when a broadcast change contains the engine's
+    `ROUND_START`, or when trusted code asks. The room reports each change through `onUpdate`; the
+    server applies the policy. There is no loop or timer, and the model cannot cause its own turn.
+  - **The model proposes a value.** One Mastra agent, no tools, Gemma on Ollama by default behind
+    the `ModelProvider` abstraction. It is shown a read-only view without tokens, keys, the join
+    code or configuration, and is handed nothing it could act through.
+  - **One way into the engine.** The AI package's hand-off validates the proposal against the live
+    session's current state, runs the safety validator, and hands the room's trusted `applyEvent`
+    only what the safety package released. `GameSession.applyEvent` calls the engine's
+    `applyValidatedEvent` and nothing else. There is no AI-only mutation path.
+  - **Then the usual two steps.** The room broadcasts the engine's result as an ordinary `update`.
+    The handle is then saved.
+  - **Failures stay in the turn.** An unreachable or slow model, a malformed reply, and a refusal
+    by the schema, the engine or the safety validator each end the turn with nothing applied,
+    broadcast or saved. The game is unaffected.
+  - **Per-session order, no global lock, bounded waits.** One session's turns are serialized.
+    Sessions are independent. Every model call has a time limit. A turn is not started for a closed
+    session, does not keep a session from being evicted, never loads one, and drops an answer that
+    arrives after its session was unloaded.
+  - **Off by default.** Without `GAME_MASTER_ENABLED=true` no model code is loaded and no model
+    runtime is needed. Only the multi-session server has a Game Master. See [AI.md](./AI.md).
 - **A server makes its saves one at a time (Phase 5L).** Saves on one `PersistentServer` wait for
   the one before, so the store never has two writes from that server in flight and a later save
   never stores an older state. A waiting save captures the game when it starts, not when it was
@@ -1056,7 +1082,7 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
 | 5H      | MongoDB adapter for the SessionStore interface                                                              | **Complete** |
 | 5I      | Persistent server: create, load, explicit save and shutdown around one game                                 | **Complete** |
-| Later   | Save cadence, authentication and TLS, token persistence, Redis, Game Master, deployment                     | Planned      |
+| Later   | Save cadence, authentication and TLS, token persistence, Redis, model tools, deployment                     | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

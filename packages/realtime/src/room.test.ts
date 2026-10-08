@@ -608,6 +608,7 @@ describe('the room is synchronous and keeps transport out of the game', () => {
     expect([...new Set(calls)].sort()).toEqual([
       'advanceTime',
       'applyCommand',
+      'applyEvent',
       'getState',
       'submitAction',
     ]);

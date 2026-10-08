@@ -650,15 +650,13 @@ describe('the persistence boundary', () => {
     expect(topLevel).toEqual([]);
   });
 
-  it('restores through the engine, and changes the state only through the three operations', () => {
+  it('restores through the engine, and changes the state only through the four operations', () => {
     expect(code).toContain('gameStateSchema.safeParse(');
     expect(code).toContain('createSession(');
-    expect(code).not.toMatch(
-      /processPlayerAction|\bstep\(|submitGameEvent|applyValidatedEvent|replay\(/,
-    );
+    expect(code).not.toMatch(/processPlayerAction|\bstep\(|submitGameEvent|replay\(/);
     // One mutable binding in the whole module, inside the holder. After it is
     // initialised it is assigned in exactly two places: an accepted action, and
-    // `replace`, which the other two operations call on success.
+    // `replace`, which the other three operations call on success.
     expect(code.match(/\blet\b/g)).toHaveLength(1);
     expect(code.match(/\bcurrent = /g)).toHaveLength(2);
   });

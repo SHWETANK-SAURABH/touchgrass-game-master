@@ -1,8 +1,9 @@
 # Safety Architecture
 
-> **Status: Phase 4 — safety validator.** A deterministic safety validator exists in
-> `packages/safety`. A Game Master proposal that the engine has found legal is assessed against the
-> safety policy of its game, and is handed to the engine only if no rule matched. It is a fixed set
+> **Status: the validator gates the Game Master in live games.** A deterministic safety validator
+> exists in `packages/safety`. A Game Master proposal that the engine has found legal is assessed
+> against the safety policy of its game, and is handed to the engine only if no rule matched. This
+> now happens for every Game Master turn in a live session, not only in tests. It is a fixed set
 > of rules over the text and values of an event. It has no knowledge of the place a game is being
 > played, and **it does not make the application safe**: see
 > [What the validator cannot do](#what-the-validator-cannot-do).
@@ -345,8 +346,15 @@ Every history entry records where it came from. `HistorySource` is `'engine' | '
 'game-master'`: events the engine produces are recorded as `engine`, and an event submitted on
 behalf of the Game Master is recorded as `game-master`. The engine's tests assert both.
 
-Nothing is stored today: a verdict is returned to the caller of the hand-off and goes no further.
-Once persistence exists, it stores per session:
+In a live game, every Game Master turn produces a record for whoever listens (`onAudit`): the
+session, the trigger, the model, the outcome, the stage at which a proposal was refused, and a
+code. A proposal refused for safety is recorded as `REJECTED` at stage `SAFETY`. The record does
+not include the proposal's text, the verdict's violations, or the rationale, and nothing stores it:
+the development server prints it. A rejected proposal changes nothing in the game, is not broadcast
+and is not saved.
+
+The full verdict is still returned only to the caller of the hand-off. A later phase should store,
+per session:
 
 - every event the model proposed
 - the verdict each one received, with its violations and `policyVersion`
@@ -380,16 +388,17 @@ reason about, and have reviewed.**
 
 ## Where it lives
 
-| Piece                                                       | Location                             |
-| ----------------------------------------------------------- | ------------------------------------ |
-| Hazard taxonomy                                             | `packages/safety/src/hazards.ts`     |
-| Policy derivation                                           | `packages/safety/src/policy.ts`      |
-| Verdict contract                                            | `packages/safety/src/verdict.ts`     |
-| Text normalisation and the "cannot be read" check           | `packages/safety/src/text.ts`        |
-| Lexical rules                                               | `packages/safety/src/rules.ts`       |
-| `assessEventSafety`: text and structural checks → a verdict | `packages/safety/src/assess.ts`      |
-| `validateSafety`, `SafetyClearedEvent`                      | `packages/safety/src/clearance.ts`   |
-| The hand-off that calls it before the engine                | `packages/ai/src/handoff/handoff.ts` |
+| Piece                                                       | Location                                   |
+| ----------------------------------------------------------- | ------------------------------------------ |
+| Hazard taxonomy                                             | `packages/safety/src/hazards.ts`           |
+| Policy derivation                                           | `packages/safety/src/policy.ts`            |
+| Verdict contract                                            | `packages/safety/src/verdict.ts`           |
+| Text normalisation and the "cannot be read" check           | `packages/safety/src/text.ts`              |
+| Lexical rules                                               | `packages/safety/src/rules.ts`             |
+| `assessEventSafety`: text and structural checks → a verdict | `packages/safety/src/assess.ts`            |
+| `validateSafety`, `SafetyClearedEvent`                      | `packages/safety/src/clearance.ts`         |
+| The hand-off that calls it before the engine                | `packages/ai/src/handoff/handoff.ts`       |
+| Where a live session's Game Master turn goes through it     | `packages/server/src/game-master-turns.ts` |
 
 The tests hold two lists that matter equally: instructions that must be refused, and instructions that
 must be allowed, including text the real `gemma3:4b` model produced ("Touch the gate and shout your

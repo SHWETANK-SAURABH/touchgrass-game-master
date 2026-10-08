@@ -4,6 +4,7 @@ import {
   type EngineContext,
   type EngineError,
   type GameState,
+  type ValidatedGameEvent,
   applyValidatedEvent,
   validateExternalEvent,
 } from '@touchgrass/game-engine';
@@ -148,16 +149,38 @@ export type HandoffFailure =
     };
 
 /**
- * Validates a proposal and, if it is legal and passes the safety policy, has the
- * engine apply it. Deterministic: no model is involved. On any failure nothing
- * is applied and the caller's state is exactly as it was.
+ * Something that holds a game and has the engine apply validated events to it:
+ * a plain state, or a live session.
  */
-export function handOffProposal(
+export interface ProposalTarget {
+  /** The game as it stands now. */
+  readonly getState: () => GameState;
+  /**
+   * Has the engine apply an event it validated. It must go through the engine's
+   * `applyValidatedEvent` and must leave the game untouched on a refusal.
+   */
+  readonly applyEvent: (
+    validated: ValidatedGameEvent,
+    ctx: EngineContext,
+  ) => Result<{ readonly state: GameState }, EngineError>;
+}
+
+/**
+ * Validates a proposal against the game a target holds and, if it is legal and
+ * passes the safety policy, has the target apply it. Deterministic: no model is
+ * involved. On any failure nothing is applied and the game is exactly as it was.
+ *
+ * The proposal is validated against the target's state at the moment of the
+ * call, not against whatever state the proposal was made from. A model takes
+ * time to answer, and the game may have moved on meanwhile.
+ */
+export function handOffProposalTo(
+  target: ProposalTarget,
   proposal: unknown,
-  state: GameState,
   ctx: EngineContext,
   safety: PolicyOptions = {},
 ): Result<HandoffOutcome, HandoffFailure> {
+  const state = target.getState();
   const validated = validateGameMasterProposal(proposal, state, ctx, safety);
   if (!validated.ok) return validated;
 
@@ -172,11 +195,35 @@ export function handOffProposal(
     return err({ stage: 'SAFETY', rejection: released.error, proposal: validated.value.proposal });
   }
 
-  const applied = applyValidatedEvent(state, released.value, ctx);
+  const applied = target.applyEvent(released.value, ctx);
   if (!applied.ok) {
     return err({ stage: 'APPLICATION', error: applied.error, proposal: validated.value.proposal });
   }
-  return ok({ outcome: 'APPLIED', state: applied.value, proposal: validated.value.proposal });
+  return ok({ outcome: 'APPLIED', state: applied.value.state, proposal: validated.value.proposal });
+}
+
+/**
+ * The same hand-off for a plain state. The new state is returned; the one
+ * passed in is never changed.
+ */
+export function handOffProposal(
+  proposal: unknown,
+  state: GameState,
+  ctx: EngineContext,
+  safety: PolicyOptions = {},
+): Result<HandoffOutcome, HandoffFailure> {
+  return handOffProposalTo(
+    {
+      getState: () => state,
+      applyEvent: (validated, applyCtx) => {
+        const applied = applyValidatedEvent(state, validated, applyCtx);
+        return applied.ok ? ok({ state: applied.value }) : applied;
+      },
+    },
+    proposal,
+    ctx,
+    safety,
+  );
 }
 
 /**

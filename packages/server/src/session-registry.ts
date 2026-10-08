@@ -1,6 +1,6 @@
 import { type Clock, type Result, err, ok, systemClock } from '@touchgrass/shared';
 import type { EngineContext } from '@touchgrass/game-engine';
-import type { GameSession } from '@touchgrass/game-session';
+import type { GameSession, SessionUpdate } from '@touchgrass/game-session';
 import type { SessionPersistenceError } from '@touchgrass/session-persistence';
 import type { ClosableSessionStore } from './persistent-server';
 import {
@@ -149,6 +149,11 @@ export interface SessionRegistryOptions {
   readonly finishedIdleMs?: number;
   /** Told what happens to sessions. A listener that throws is ignored. */
   readonly onEvent?: (event: SessionLifecycleEvent) => void;
+  /**
+   * Told each change a loaded session's room broadcasts, with the session's
+   * id. It is what the connections are sent. A listener that throws is ignored.
+   */
+  readonly onUpdate?: (sessionId: string, update: SessionUpdate) => void;
 }
 
 export interface SessionRegistry {
@@ -311,6 +316,9 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
           use.lastActiveAt = clock.now();
           if (emptied) emit('idle', session.id);
         },
+        ...(options.onUpdate
+          ? { onUpdate: (update) => options.onUpdate?.(session.id, update) }
+          : {}),
       }),
       // A handle that has been unloaded no longer speaks for its session: the
       // id may have been loaded again, or its snapshot deleted.

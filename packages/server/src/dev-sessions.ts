@@ -1,8 +1,15 @@
 import { createInterface } from 'node:readline';
-import { createJoinCode, createSessionId, seedFromString, systemClock } from '@touchgrass/shared';
+import {
+  createJoinCode,
+  createSessionId,
+  parseServerEnv,
+  seedFromString,
+  systemClock,
+} from '@touchgrass/shared';
 import { contextAt } from '@touchgrass/game-engine';
 import { createMongoSessionStore } from '@touchgrass/session-store/mongodb';
-import { parseLifecycleConfig, parseServerConfig } from './config';
+import { parseGameMasterConfig, parseLifecycleConfig, parseServerConfig } from './config';
+import type { GameMasterTurnsOptions } from './game-master-turns';
 import { startSessionServer } from './session-server';
 
 /**
@@ -18,6 +25,9 @@ import { startSessionServer } from './session-server';
  *   SESSION_IDLE_MS            evict a session unused for this long (default 30 minutes)
  *   SESSION_FINISHED_IDLE_MS   the same, once its game is over (default 0)
  *   SESSION_SWEEP_MS           how often to look for sessions to evict (default 1 minute)
+ *   GAME_MASTER_ENABLED        true to give the games a Game Master (default false)
+ *   GAME_MASTER_TIMEOUT_MS     how long one Game Master turn may wait (default 20 seconds)
+ *   MODEL_PROVIDER, MODEL_NAME, MODEL_BASE_URL, ...   the model, as for the web app
  *
  * Sessions are not created over the network. This terminal is where they are
  * made and managed, because nothing authenticates who would be asking:
@@ -26,6 +36,7 @@ import { startSessionServer } from './session-server';
  *   list              the sessions in memory
  *   save <id>         save one now
  *   evict <id>        release one from memory, saving it first if needed
+ *   gm <id>           take one Game Master turn for a session now
  *   quit              save what is unsaved and stop
  *
  * A stored session that is not in memory is loaded when someone connects to it,
@@ -41,12 +52,35 @@ import { startSessionServer } from './session-server';
 
 const config = parseServerConfig(process.env);
 const lifecycle = parseLifecycleConfig(process.env);
-if (!config.ok || !lifecycle.ok) {
+const gameMasterConfig = parseGameMasterConfig(process.env);
+if (!config.ok || !lifecycle.ok || !gameMasterConfig.ok) {
   console.error('The server is not configured:');
-  for (const result of [config, lifecycle]) {
+  for (const result of [config, lifecycle, gameMasterConfig]) {
     if (!result.ok) for (const issue of result.error.issues) console.error(`  ${issue}`);
   }
   process.exit(1);
+}
+
+// With the Game Master off, the model code is not even loaded.
+let gameMaster: GameMasterTurnsOptions | undefined;
+if (gameMasterConfig.value.enabled) {
+  try {
+    const { createGameMasterFromEnv } = await import('@touchgrass/ai/game-master');
+    gameMaster = {
+      gameMaster: createGameMasterFromEnv(parseServerEnv(process.env)),
+      timeoutMs: gameMasterConfig.value.timeoutMs,
+      // What a turn did: ids, the model and an outcome. Never a prompt or a reply.
+      onAudit: (audit) => {
+        const detail = [audit.stage, audit.code, audit.eventType].filter(Boolean).join(' ');
+        console.log(
+          `[game master ${audit.sessionId}] ${audit.invocationId} ${audit.trigger}: ${audit.outcome}${detail ? ` (${detail})` : ''}`,
+        );
+      },
+    };
+  } catch {
+    console.error('The Game Master is not configured: check the MODEL_* settings.');
+    process.exit(1);
+  }
 }
 
 // The application makes the one store, from its configuration.
@@ -57,6 +91,7 @@ const started = await startSessionServer({
   port: config.value.port,
   idleMs: lifecycle.value.idleMs,
   finishedIdleMs: lifecycle.value.finishedIdleMs,
+  ...(gameMaster ? { gameMaster } : {}),
   // The session id, what happened, and an error code at most.
   onEvent: (event) => {
     console.log(`[session ${event.sessionId}] ${event.type}${event.code ? `: ${event.code}` : ''}`);
@@ -75,7 +110,12 @@ const { registry } = server;
 
 console.log(`TouchGrass sessions server (development) listening on port ${server.port}`);
 console.log(`Connect to ws://localhost:${server.port}/sessions/<sessionId>`);
-console.log('Commands: create [gameId], list, save <id>, evict <id>, quit');
+console.log(
+  gameMaster
+    ? `Game Master: on (${gameMaster.gameMaster.provider}, ${gameMaster.gameMaster.model}). It is asked when a round begins.`
+    : 'Game Master: off. Set GAME_MASTER_ENABLED=true to turn it on.',
+);
+console.log('Commands: create [gameId], list, save <id>, evict <id>, gm <id>, quit');
 
 // The one timer: it only asks the registry to look. The registry has none.
 const sweep = setInterval(() => {
@@ -156,13 +196,18 @@ terminal.on('line', (line) => {
         console.log(evicted.ok ? 'Not in memory now.' : `Not evicted: ${evicted.error.code}`);
       });
       break;
+    case 'gm':
+      void server.runGameMaster(argument).then((turn) => {
+        if (!('invocationId' in turn)) console.log(`No turn: ${turn.code}`);
+      });
+      break;
     case 'quit':
       void shutdown();
       break;
     case '':
       break;
     default:
-      console.log('Commands: create [gameId], list, save <id>, evict <id>, quit');
+      console.log('Commands: create [gameId], list, save <id>, evict <id>, gm <id>, quit');
   }
 });
 

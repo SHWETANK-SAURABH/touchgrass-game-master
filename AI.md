@@ -1,11 +1,13 @@
 # AI Architecture
 
-> **Status: Phase 4 — safety validator.** A Game Master exists: one Mastra agent, running Gemma
-> through a local Ollama, that reads a game and returns a structured proposal. A proposal can be
-> handed off: the game engine checks that it is legal in the current game, a deterministic safety
-> validator then checks it against the game's safety policy, and only then does the engine apply it.
-> Nothing in the app calls the Game Master during a game. The normal tests use a scripted stand-in
-> for the model. The separate manual live test (`npm run ai:live`) runs against the real local
+> **Status: the Game Master takes part in live games.** A Game Master exists: one Mastra agent,
+> running Gemma through a local Ollama, that reads a game and returns a structured proposal. A
+> proposal is handed off: the game engine checks that it is legal in the current game, a
+> deterministic safety validator then checks it against the game's safety policy, and only then
+> does the engine apply it. The multi-session server now asks the Game Master when a round begins,
+> applies what passes through the live session, tells the room, and saves the game. It is off by
+> default, and a game needs no model to run. The normal tests use a scripted stand-in for the model.
+> The manual live test (`npm run ai:live`) and one opt-in test run against the real local
 > `gemma3:4b` model.
 
 **AI proposes; schema checks shape; domain validation checks legality; safety validation checks
@@ -62,6 +64,23 @@ new GameState
 
 Every arrow narrows what is possible. A rejection at any stage leaves the game exactly as it was:
 nothing is applied, scored or recorded, the event is not rewritten, and the model is not asked again.
+
+In a live game the same pipeline continues past the engine, and starts before the model with a
+decision that is not the model's:
+
+```
+trigger                          application code: a round began, or trusted code asked
+    ↓
+  … the pipeline above, against the live session …
+    ↓
+deterministic application        engine, through the session's room   room.applyEvent
+    ↓
+broadcast                        the room tells its connections, as for any other change
+    ↓
+save                             the session handle's own save()
+```
+
+See [The Game Master in a live game](#the-game-master-in-a-live-game).
 
 What the safety step is and is not: it is a fixed set of rules over the text and values of the event,
 described in [SAFETY.md](./SAFETY.md). It never reads the proposal's `rationale`, which is the model
@@ -492,16 +511,131 @@ collecting.
 
 ---
 
+## The Game Master in a live game
+
+`packages/server/src/game-master-turns.ts` is where the Game Master meets a running session. It is
+wiring: it holds no game rule and no safety rule.
+
+```
+LLM proposes  →  schema validates structure  →  engine validates legality
+              →  deterministic safety validates safety  →  engine executes
+              →  realtime broadcast  →  persistence
+```
+
+**Who decides when.** The application does, never the model. The trigger policy is one function,
+`gameMasterTriggerFor`, over what the engine recorded:
+
+| Trigger       | When                                                                  |
+| ------------- | --------------------------------------------------------------------- |
+| `round_start` | A change the room broadcast contains the engine's `ROUND_START` event |
+| `manual`      | Trusted server code calls `server.runGameMaster(sessionId)`           |
+
+There is no loop, no timer and no polling. The Game Master's own event does not contain a
+`ROUND_START`, so it cannot cause itself to be asked. A turn is one model call (plus at most one
+repair attempt inside the agent) and proposes at most one event.
+
+**One event per turn.** The proposal schema is `{ rationale, event | null }`, strictly. A reply
+with a list of events, a second event, or any extra field is not a proposal and is refused whole.
+More than one event in a round takes more than one turn.
+
+**What the model is given.** A read-only view built from the game: its definition, the round, the
+players' ids, names, roles and scores, what is in force, the last ten history summaries, and what
+it may propose. It is never given a player token, the host token, the token key, the join code (the
+engine's first history summary names it, and it is redacted from the view), the random seed, the
+session id, a connection, the store, or any configuration. The state object it is shown is frozen.
+
+**What the model can reach.** Nothing. The agent is built with no tools. It is called with a value
+and returns a value. It is never handed the session, the room, the engine, the store or a socket,
+and the code that asks it imports no file, shell or network API.
+
+**Where a turn can stop.** Each of these ends the turn with nothing applied, nothing broadcast and
+nothing saved, and the game carries on:
+
+| What happened                                      | Outcome    | Stage         |
+| -------------------------------------------------- | ---------- | ------------- |
+| The session is closed, or the game is not running  | `SKIPPED`  | —             |
+| The model runtime is unreachable or has no model   | `FAILED`   | `PROPOSAL`    |
+| The model did not answer within the time limit     | `FAILED`   | `PROPOSAL`    |
+| The reply was not a valid proposal, after a repair | `FAILED`   | `PROPOSAL`    |
+| The proposal is not one for this game              | `REJECTED` | `SCHEMA`      |
+| The engine says the event is not legal now         | `REJECTED` | `STATE`       |
+| A safety rule matched, or the event is unreadable  | `REJECTED` | `SAFETY`      |
+| The engine refused it as it was applied            | `REJECTED` | `APPLICATION` |
+| The session was unloaded while the model thought   | `SKIPPED`  | —             |
+
+`APPLIED` and `NO_EVENT` are the two ways a turn succeeds.
+
+**The game it is judged against.** A model takes time. The proposal is validated against the game
+as it is when the answer arrives, not as it was when the question was asked, and validation, the
+safety check and application happen in one turn of the event loop. If the game ended meanwhile, the
+engine refuses the event.
+
+**After the engine.** The room broadcasts the engine's result to that session's connections with
+the same `update` message as any other change. Then the handle's `save()` is called. If the save
+fails, the event stays applied and unsaved, and the record says so.
+
+**Concurrency and lifecycle.** Turns for one session run one at a time, in order; each sees the
+game the previous one left. Turns for different sessions do not wait for each other, and there is
+no lock across sessions. The model is always asked with a time limit
+(`GAME_MASTER_TIMEOUT_MS`, default 20 seconds). A waiting model does not count as use: the session
+can be evicted meanwhile, and the late answer is then dropped. A turn never loads a session, so it
+cannot bring an evicted one back.
+
+**The record.** Each turn produces one record for `onAudit`: an invocation id, the session id, the
+trigger, the provider and model, the outcome, the stage and a code for a failure, the kind of event
+proposed, the number of attempts, and whether it was saved. It never contains the prompt, the reply,
+the rationale, a player, or a token. Nothing stores these records; the development server prints
+them.
+
+### Configuration
+
+| Variable                   | Meaning                                     | Default                  |
+| -------------------------- | ------------------------------------------- | ------------------------ |
+| `GAME_MASTER_ENABLED`      | Give the multi-session server a Game Master | `false`                  |
+| `GAME_MASTER_TIMEOUT_MS`   | How long one turn may wait for the model    | `20000`                  |
+| `MODEL_PROVIDER`           | `ollama` or `openai-compatible`             | `ollama`                 |
+| `MODEL_NAME`               | The model tag                               | `gemma3:4b`              |
+| `MODEL_BASE_URL`           | Where the runtime listens                   | `http://localhost:11434` |
+| `MODEL_REQUEST_TIMEOUT_MS` | One request to the runtime                  | `30000`                  |
+| `MODEL_MAX_RETRIES`        | Transport retries                           | `2`                      |
+| `MODEL_TEMPERATURE`        | Sampling temperature                        | `0.8`                    |
+
+```
+MONGODB_URI=mongodb://127.0.0.1:27017 GAME_MASTER_ENABLED=true npm run sessions:dev
+```
+
+With `GAME_MASTER_ENABLED` unset, the model code is not loaded, no model is asked, and Ollama does
+not need to be installed. None of these values is sent to the model or to a client.
+
+### Testing
+
+Every test of the pipeline uses a stand-in for the model: either a fake Game Master that returns
+what the test says, or the real Mastra agent over a scripted `ModelProvider`. They cover each row of
+the table above, isolation between sessions, serialization within one, the trigger policy, the
+session lifecycle, and the whole path over real sockets. One test runs against the real runtime and
+only when asked:
+
+```
+GAME_MASTER_LIVE_TEST=1 npx vitest run packages/server/src/game-master.test.ts -t "with the real model"
+```
+
+`npm run verify` needs no model runtime.
+
+---
+
 ## 8. What comes next
 
 Not built:
 
-| Piece                                   | Notes                                                                                                   |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Showing or storing safety verdicts      | A verdict is returned to the hand-off's caller. There is no UI to show it and no persistence to keep it |
-| When to ask the Game Master             | Nothing calls `runGameMasterTurn` yet; there is no trigger or schedule                                  |
-| Limits on how often events are proposed | The engine accepts any number of valid external events                                                  |
-| Prompt evaluation                       | Recorded real outputs, asserted against the schemas                                                     |
+| Piece                                    | Notes                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Showing or storing safety verdicts       | A turn's record goes to a callback. There is no UI to show it and nothing persists it             |
+| A Game Master for the single-game server | Only the multi-session server (`startSessionServer`) has one                                      |
+| Tools for the model                      | None exist. The agent is built with no tools on purpose                                           |
+| More triggers                            | Only a round beginning, and an explicit call                                                      |
+| Limits on how often events are proposed  | One turn per round start. The engine still accepts any number of valid events from explicit calls |
+| Host control over the Game Master        | A host cannot pause, veto or configure it from a client                                           |
+| Prompt evaluation                        | Recorded real outputs, asserted against the schemas                                               |
 
 `generateStructured()` in `structured.ts` predates the Game Master. It is still tested and exported,
 but the Game Master does not use it; it has its own repair loop around the Mastra agent.

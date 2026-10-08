@@ -167,6 +167,10 @@ is allowed to call it first; that authorisation does not exist yet.
 - **No duplicate detection.** The same message submitted twice is processed twice and judged by the
   rules each time.
 - **Not connected to the Game Master.** Nothing here calls a model or the safety validator.
+  `applyEvent(validated, ctx)` applies an external event the engine has already validated, through
+  the engine's own `applyValidatedEvent`, which refuses anything it did not issue for this game as
+  it stands. It is for trusted callers; a caller acting for a Game Master passes only what the
+  safety package released.
 
 ## Dependencies
 

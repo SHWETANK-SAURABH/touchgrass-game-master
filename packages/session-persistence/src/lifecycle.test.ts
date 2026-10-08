@@ -147,6 +147,7 @@ describe('saveSession and loadSession', () => {
     expect(Object.keys(loaded).sort()).toEqual([
       'advanceTime',
       'applyCommand',
+      'applyEvent',
       'getState',
       'id',
       'snapshot',

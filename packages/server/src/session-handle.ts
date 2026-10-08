@@ -1,6 +1,6 @@
 import { type Result, ok } from '@touchgrass/shared';
 import { type GameState, isTerminalStatus } from '@touchgrass/game-engine';
-import type { GameSession } from '@touchgrass/game-session';
+import type { GameSession, SessionUpdate } from '@touchgrass/game-session';
 import { type Room, createRoom, createToken } from '@touchgrass/realtime';
 import type { SessionPersistenceError } from '@touchgrass/session-persistence';
 
@@ -46,6 +46,8 @@ export function hostSession(
     readonly playerToken?: (playerId: string) => string;
     /** Told how many connections the room has. See the room's `onConnections`. */
     readonly onConnections?: (count: number) => void;
+    /** Told each change the room broadcasts. See the room's `onUpdate`. */
+    readonly onUpdate?: (update: SessionUpdate) => void;
   } = {},
 ): HostedSession {
   const hostToken = (options.createToken ?? createToken)();

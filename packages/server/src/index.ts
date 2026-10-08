@@ -2,9 +2,11 @@ export {
   DEFAULT_DATABASE_NAME,
   DEFAULT_SERVER_PORT,
   DEFAULT_SESSION_SWEEP_MS,
+  type GameMasterConfig,
   type LifecycleConfig,
   type ServerConfig,
   type ServerConfigError,
+  parseGameMasterConfig,
   parseLifecycleConfig,
   parseServerConfig,
 } from './config';
@@ -49,6 +51,17 @@ export {
 } from './session-registry';
 
 export {
+  DEFAULT_GAME_MASTER_TIMEOUT_MS,
+  type GameMasterAudit,
+  type GameMasterTrigger,
+  type GameMasterTurns,
+  type GameMasterTurnsOptions,
+  createGameMasterTurns,
+  gameMasterTriggerFor,
+} from './game-master-turns';
+
+export {
+  type GameMasterNotRun,
   type SessionServer,
   type SessionServerError,
   type SessionServerOptions,

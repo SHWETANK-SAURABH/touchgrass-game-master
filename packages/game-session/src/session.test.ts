@@ -544,7 +544,7 @@ describe('the session is synchronous and holds only a game', () => {
     }
   });
 
-  it('depends only on the engine and shared helpers, and uses four engine functions', () => {
+  it('depends only on the engine and shared helpers, and uses five engine functions', () => {
     const imports = [...source.matchAll(/from '([^']+)'/g)].map((match) => match[1]);
     expect(imports.sort()).toEqual(['@touchgrass/game-engine', '@touchgrass/shared']);
 
@@ -558,12 +558,16 @@ describe('the session is synchronous and holds only a game', () => {
       '@touchgrass/shared',
     ]);
 
+    // It never validates an external event itself, and never applies an event
+    // any other way than the engine's own function for validated ones.
     expect(code).not.toMatch(
-      /processPlayerAction|\bstep\(|submitGameEvent|applyValidatedEvent|validateExternalEvent|replay\(/,
+      /processPlayerAction|\bstep\(|submitGameEvent|validateExternalEvent|replay\(/,
     );
     for (const name of ['createSession(', 'submitPlayerAction(', 'advanceTime(', 'reduce(']) {
       expect(code).toContain(name);
     }
+    expect(code.match(/applyValidatedEvent\(/g)).toHaveLength(1);
+    expect(code).toContain('applyValidatedEvent(current, validated, eventCtx)');
   });
 });
 

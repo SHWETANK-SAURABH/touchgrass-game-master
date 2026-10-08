@@ -318,6 +318,7 @@ describe('the application layer keeps no module-level state and no storage of it
       'config.ts',
       'dev-sessions.ts',
       'dev.ts',
+      'game-master-turns.ts',
       'index.ts',
       'persistent-server.ts',
       'persistent-sessions.ts',
@@ -328,7 +329,12 @@ describe('the application layer keeps no module-level state and no storage of it
     ]);
     for (const [name, source] of sources) {
       const code = strip(source);
-      expect(code, name).not.toMatch(/new Set|new WeakMap|\bclass\b|setTimeout/);
+      expect(code, name).not.toMatch(/new Set|\bclass\b|setTimeout/);
+      // One weak table exists: which Game Master turn is under way for a
+      // handle. It is made inside each instance and keeps no session alive.
+      expect(code.match(/new WeakMap/g) ?? [], name).toHaveLength(
+        name === 'game-master-turns.ts' ? 1 : 0,
+      );
       // One timer exists: the multi-session development server's sweep, which
       // only asks the registry to look. Nothing in the library has a timer.
       expect(code.match(/setInterval/g) ?? [], name).toHaveLength(

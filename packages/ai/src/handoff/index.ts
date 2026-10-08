@@ -10,7 +10,9 @@ export {
   type ProposalRejection,
   type HandoffOutcome,
   type HandoffFailure,
+  type ProposalTarget,
   validateGameMasterProposal,
   handOffProposal,
+  handOffProposalTo,
   runGameMasterTurn,
 } from './handoff';

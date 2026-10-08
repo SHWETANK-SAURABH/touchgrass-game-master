@@ -129,7 +129,9 @@ export function buildGameMasterView(context: GameMasterContext): GameMasterView 
     recentHistory: state.history.slice(-limit).map((entry) => ({
       secondsAgo: secondsBetween(entry.at, now),
       source: entry.source,
-      summary: entry.summary,
+      // The engine's first entry names the join code. The Game Master has no use
+      // for the means of joining a game, so it is never shown one.
+      summary: entry.summary.split(state.joinCode).join('[join code]'),
     })),
     allowed: {
       eventKinds: definition.allowedEventKinds,

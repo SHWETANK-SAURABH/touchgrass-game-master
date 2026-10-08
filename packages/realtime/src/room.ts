@@ -1,6 +1,13 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { type Result, createPlayerId as mintPlayerId, ok } from '@touchgrass/shared';
-import type { EngineContext, EngineError, GameState, HistoryEntry } from '@touchgrass/game-engine';
+import { type Result, createPlayerId as mintPlayerId, err, ok } from '@touchgrass/shared';
+import {
+  type EngineContext,
+  type EngineError,
+  type GameState,
+  type HistoryEntry,
+  type ValidatedGameEvent,
+  engineError,
+} from '@touchgrass/game-engine';
 import type { GameSession, SessionUpdate } from '@touchgrass/game-session';
 import {
   type HostCommand,
@@ -94,6 +101,18 @@ export interface Room {
    */
   readonly tick: (ctx: EngineContext) => Result<SessionUpdate, EngineError>;
 
+  /**
+   * Has the game apply an external event the engine has validated, and tells
+   * everyone in the room the result, as for any other change. Trusted callers
+   * only: it is not reachable from a client message, and nothing calls it
+   * automatically. The room does not judge the event; the session and the
+   * engine do. A closed room refuses and changes nothing.
+   */
+  readonly applyEvent: (
+    validated: ValidatedGameEvent,
+    ctx: EngineContext,
+  ) => Result<SessionUpdate, EngineError>;
+
   /** The player a connection currently is, if any. */
   readonly playerIdOf: (connection: RoomConnection) => string | undefined;
 
@@ -144,6 +163,13 @@ export interface RoomOptions {
    * whoever listens decides what an empty room means.
    */
   readonly onConnections?: (count: number) => void;
+  /**
+   * Told each authoritative change the room is about to broadcast: the entries
+   * the change added and the state after it. It is the same thing the
+   * connections are sent, and it is told once per change whether or not anyone
+   * is connected. A listener cannot alter it, and one that throws is ignored.
+   */
+  readonly onUpdate?: (update: SessionUpdate) => void;
   readonly maxMessageBytes?: number;
 }
 
@@ -163,6 +189,7 @@ export function createRoom(options: RoomOptions): Room {
   const createPlayerId = options.createPlayerId ?? mintPlayerId;
   const mintToken = options.createToken ?? createToken;
   const playerToken = options.playerToken;
+  const onUpdate = options.onUpdate;
   const maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
 
   /** Which player each bound connection is. */
@@ -265,6 +292,11 @@ export function createRoom(options: RoomOptions): Room {
     options: { except?: RoomConnection; departing?: RoomConnection | undefined } = {},
   ): void => {
     reconcile(state);
+    try {
+      onUpdate?.({ state, entries });
+    } catch {
+      // A listener that fails must not stop the room telling its connections.
+    }
     const text = encodeServerMessage({ type: 'update', entries: [...entries], state });
     const recipients = new Set(playerOf.keys());
     if (hostConnection) recipients.add(hostConnection);
@@ -448,6 +480,15 @@ export function createRoom(options: RoomOptions): Room {
       if (update.ok && update.value.state !== before) {
         broadcast(update.value.state, update.value.entries);
       }
+      return update;
+    },
+
+    applyEvent(validated, ctx) {
+      if (closed) {
+        return err(engineError('INVALID_STATE_TRANSITION', 'The room is closed.'));
+      }
+      const update = session.applyEvent(validated, ctx);
+      if (update.ok) broadcast(update.value.state, update.value.entries);
       return update;
     },
 

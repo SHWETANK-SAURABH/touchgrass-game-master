@@ -682,8 +682,14 @@ describe('the hand-off owns no rules and has one way into the engine', () => {
     expect(imported.sort()).toEqual(['releaseClearedEvent', 'validateSafety']);
 
     const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    // A target is handed what the safety package released, and nothing else.
+    const handed = [...code.matchAll(/target\.applyEvent\(([^)]*)\)/g)].map((match) => match[1]);
+    expect(handed).toEqual(['released.value, ctx']);
+    // The engine's apply function is called in one place: the target for a plain
+    // state, with exactly what it was handed.
     const calls = [...code.matchAll(/applyValidatedEvent\(([^)]*)\)/g)].map((match) => match[1]);
-    expect(calls).toEqual(['state, released.value, ctx']);
+    expect(calls).toEqual(['state, validated, applyCtx']);
+    expect(code).toContain('applyEvent: (validated, applyCtx) => {');
     // The engine's validated event is passed to the safety validator and nowhere else.
     expect(code.match(/validated\.value\b(?!\.(?:kind|proposal|cleared))/g)).toHaveLength(1);
     expect(code).toContain('validateSafety(validated.value, state, safety)');

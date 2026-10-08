@@ -10,9 +10,12 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@touchgrass/ai": "*",
+    "@touchgrass/game-definitions": "*",
     "@touchgrass/game-engine": "*",
     "@touchgrass/game-session": "*",
     "@touchgrass/realtime": "*",
+    "@touchgrass/safety": "*",
     "@touchgrass/session-persistence": "*",
     "@touchgrass/session-store": "*",
     "@touchgrass/shared": "*",
