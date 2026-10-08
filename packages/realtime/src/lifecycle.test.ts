@@ -280,8 +280,11 @@ describe('resume', () => {
     const [old, b] = all as [TestConnection, TestConnection];
     const fresh = connection('fresh');
 
+    old.take();
     send(game, fresh, { type: 'resume', token: tokens[0] });
 
+    // It is told why, once, and closed.
+    expect(old.take()).toEqual([{ type: 'error', code: 'CONNECTION_REPLACED' }]);
     expect(old.closed).toBe(true);
     expect(game.room.playerIdOf(old)).toBeUndefined();
     expect(game.room.playerIdOf(fresh)).toBe('player-1');

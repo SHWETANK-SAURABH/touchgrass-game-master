@@ -40,7 +40,11 @@ export interface HostedSession {
  */
 export function hostSession(
   session: GameSession,
-  options: { readonly createToken?: () => string } = {},
+  options: {
+    readonly createToken?: () => string;
+    /** Makes a player's token, the same every time. See the room's `playerToken`. */
+    readonly playerToken?: (playerId: string) => string;
+  } = {},
 ): HostedSession {
   const hostToken = (options.createToken ?? createToken)();
   const room = createRoom({ session, hostToken, ...options });

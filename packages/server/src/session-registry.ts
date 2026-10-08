@@ -9,6 +9,7 @@ import {
   makeSession,
   saveNewSession,
 } from './persistent-sessions';
+import { createPlayerTokens } from './player-tokens';
 import { type SessionHandle, createSessionHandle, hostSession } from './session-handle';
 
 /**
@@ -64,7 +65,16 @@ export type RegistryShutdownResult = Result<void, RegistryShutdownError>;
 export interface SessionRegistryOptions {
   /** Where snapshots are kept. Every handle uses it; only the registry closes it. */
   readonly store: ClosableSessionStore;
+  /** Makes host tokens. Defaults to 32 random bytes. */
   readonly createToken?: () => string;
+  /**
+   * The key player tokens are worked out from: at least 32 random bytes. With
+   * the same key, a player's token is the same in every room this registry
+   * makes for their session, so they can resume after it is unloaded and loaded
+   * again. Left out, a new key is made for this registry, and tokens last as
+   * long as the registry does. The key is never stored or sent.
+   */
+  readonly tokenKey?: Uint8Array;
 }
 
 export interface SessionRegistry {
@@ -126,6 +136,7 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
   const { store } = options;
   const sessions = createPersistentSessions(store);
   const entries = new Map<string, Entry>();
+  const playerTokens = createPlayerTokens(options.tokenKey);
   let shuttingDown: Promise<RegistryShutdownResult> | undefined;
 
   const registryClosed = (): RegistryClosedError => ({
@@ -156,7 +167,8 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
 
   /**
    * Makes the handle for a session that is stored as it is now, and registers
-   * it. The room and the host token are new. When the handle stops, by its own
+   * it. The room and the host token are new; the players' tokens are the ones
+   * they have always had in this registry. When the handle stops, by its own
    * `close()` or `shutdown()`, its id is held until it has finished and then
    * freed; the store is left open.
    */
@@ -164,7 +176,10 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
     let unloading: { readonly release: () => void } | undefined;
     let unloaded = false;
     const handle = createSessionHandle({
-      hosted: hostSession(session, options.createToken ? { createToken: options.createToken } : {}),
+      hosted: hostSession(session, {
+        ...(options.createToken ? { createToken: options.createToken } : {}),
+        playerToken: playerTokens(session.id),
+      }),
       // A handle that has been unloaded no longer speaks for its session: the
       // id may have been loaded again, or its snapshot deleted.
       persist: (live) =>

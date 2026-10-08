@@ -265,7 +265,8 @@ order give the same roles on any host.
 | Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Many loaded games in one process                  | Phase 5M: `createSessionRegistry`; no network routing yet        |
 | One listener for many games                       | Phase 5N: `startSessionServer`, `/sessions/<sessionId>`          |
-| Authentication, eviction, reconnect after reload  | Later                                                            |
+| Reconnect with `resume`, across a reload          | Phase 5O: player tokens worked out from a key, never stored      |
+| Authentication, eviction, token rotation          | Later                                                            |
 
 ---
 
@@ -521,7 +522,8 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
   undecided.
 - **The room is always new.** Tokens and connections are not in a snapshot. A loaded game gets a new
   `GameSession`, a new `Room`, a new host token and no connections. Every player is still in the
-  game, and no token issued before the restore works.
+  game. Whether a player token issued before the restore works depends on how the room makes
+  tokens: not behind the single-game server, and yes behind a registry (Phase 5O).
 - **One room, one session.** A loaded session is the one the room is built around. Nothing in the
   server layer is kept at module level.
 - **Many games in one process (Phase 5M).** A `SessionRegistry` holds the games loaded in one
@@ -563,8 +565,30 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
   - **Isolation is per room.** Connections, tokens, the host role and broadcasts belong to one
     room. Sessions share the listener and the store and nothing else; there is no lock across them.
   - **Still development-stage.** No authentication: knowing a session id is enough to connect, and
-    connecting loads a stored session. No eviction, no automatic time, no reconnect across a
-    reload, and one process only.
+    connecting loads a stored session. No eviction, no automatic time, and one process only.
+- **Reconnect is `resume` (Phase 5O).** A player who lost their socket connects to the same
+  address and sends the existing `resume` message with their token. No message was added.
+  - **A dropped socket removes nothing from the game.** The room forgets the connection; the
+    player, role and score stay. The old connection can neither hear nor act.
+  - **It works after the session was unloaded and loaded again.** The new room is built around the
+    restored session, and a returning player is whoever the stored game says has that id. Nothing
+    is carried over from the old room, which stays closed for good.
+  - **Tokens are worked out, not stored.** A registry makes each player token as an HMAC of the
+    session id and the player id under a key it holds in memory. The same inputs give the same
+    token, so a later room accepts it. No token or trace of one enters `GameState`, a snapshot or
+    the database; the standing rule that capabilities are never persisted is unchanged. A token is
+    therefore bound to one session and one player by construction.
+  - **The key sets how long a token lives.** By default it is random per registry, so tokens
+    survive reloads and die with the process. An application may supply the key, and then a later
+    process with the same key and store accepts the same tokens. Nothing reads one from the
+    environment.
+  - **One connection per player.** A resume for a player who is still connected takes over: the
+    earlier connection is unbound, sent `CONNECTION_REPLACED` and closed.
+  - **Refusals change nothing.** An invalid token, another session's token, a left player's token
+    and a second identity for an already-joined connection are refused without touching the game
+    or binding the connection.
+  - **Not here.** Token rotation or revocation, replay of missed updates, a kept host token, and
+    anything across processes beyond sharing a key.
 - **A server makes its saves one at a time (Phase 5L).** Saves on one `PersistentServer` wait for
   the one before, so the store never has two writes from that server in flight and a later save
   never stores an older state. A waiting save captures the game when it starts, not when it was

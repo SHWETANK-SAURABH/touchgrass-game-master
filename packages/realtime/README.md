@@ -82,23 +82,25 @@ The server sends:
 { type: 'error', code }                             // to the sender: the transport refused
 ```
 
-| Transport error          | Meaning                                                           |
-| ------------------------ | ----------------------------------------------------------------- |
-| `BAD_MESSAGE`            | Not text, too large, not JSON, or not one of the six envelopes    |
-| `NOT_JOINED`             | An action or leave from a connection that is not a player         |
-| `ALREADY_JOINED`         | A join or resume from a connection that is already a player       |
-| `WRONG_JOIN_CODE`        | The join code is not this game's                                  |
-| `INVALID_TOKEN`          | The token is not valid for what it was presented as               |
-| `NOT_HOST`               | A host command from a connection that is not the host             |
-| `HOST_ALREADY_CONNECTED` | The host token was presented while another connection is the host |
-| `CANNOT_LEAVE`           | A leave after the game has started                                |
-| `INVALID_SESSION_PATH`   | The address connected to is not `/sessions/<sessionId>`           |
-| `SESSION_NOT_FOUND`      | The address names a session that does not exist                   |
-| `SESSION_UNAVAILABLE`    | The session exists but could not be made ready                    |
-| `SESSION_CLOSED`         | The session is no longer served. The connection is then closed    |
+| Transport error          | Meaning                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| `BAD_MESSAGE`            | Not text, too large, not JSON, or not one of the six envelopes     |
+| `NOT_JOINED`             | An action or leave from a connection that is not a player          |
+| `ALREADY_JOINED`         | A join or resume from a connection that is already a player        |
+| `WRONG_JOIN_CODE`        | The join code is not this game's                                   |
+| `INVALID_TOKEN`          | The token is not valid for what it was presented as                |
+| `NOT_HOST`               | A host command from a connection that is not the host              |
+| `HOST_ALREADY_CONNECTED` | The host token was presented while another connection is the host  |
+| `CANNOT_LEAVE`           | A leave after the game has started                                 |
+| `INVALID_SESSION_PATH`   | The address connected to is not `/sessions/<sessionId>`            |
+| `SESSION_NOT_FOUND`      | The address names a session that does not exist                    |
+| `SESSION_UNAVAILABLE`    | The session exists but could not be made ready                     |
+| `SESSION_CLOSED`         | The session is no longer served. The connection is then closed     |
+| `CONNECTION_REPLACED`    | Another connection resumed as this player. This one is then closed |
 
-The last four are sent by a listener that serves many sessions, and by a room that has been closed.
-No message envelope changed: a client of a single-room server sees exactly what it saw before.
+The four session errors are sent by a listener that serves many sessions, and by a room that has
+been closed. `CONNECTION_REPLACED` is sent to a connection that is being taken over. No message
+envelope changed.
 
 - Text frames only. A binary frame is `BAD_MESSAGE`.
 - A frame larger than the limit (4 KB by default) closes the socket with status 1009.
@@ -130,10 +132,29 @@ player id; a message containing one is not a valid envelope.
 **Disconnect.** The room forgets the connection. The player stays in the game, the token stays
 valid, the game is not paused, and nobody is told.
 
-**Resume.** A connection sends `resume` with a player token and is bound to that player. No player
-is created and nothing is broadcast. If the player still had a connection, it is closed first: a
-player has at most one connection, and the earlier one can no longer act or hear. A player who has
-left cannot resume.
+**Resume.** A connection sends `resume` with a player token and is bound to that player. It is the
+one way to reconnect; there is no other message for it.
+
+- The reply is `joined` with the player id and the state, and no token. No player is created,
+  the game does not change, and nobody else is told.
+- A token that is not a current player's is `INVALID_TOKEN`: an unknown or altered token, a token
+  from another game, the host token, and the token of a player who has left or been removed. The
+  connection is not bound and nothing changes. It stays open and may try again.
+- A connection that is already a player is `ALREADY_JOINED`, whatever token it sends. A token makes
+  a connection the one player it is for, and no connection is ever two players.
+- **Takeover.** If the player still has a connection, the new one replaces it. The earlier
+  connection is unbound first, then sent `CONNECTION_REPLACED` and closed. A player has at most
+  one connection at any moment: the earlier one can no longer act or hear, and anything it still
+  sends is answered `NOT_JOINED`. Two resumes for one player are handled in the order they arrive,
+  and the later one is the player.
+
+**Tokens that can be made again.** By default a player token is a random value made at the join
+and remembered by that room only, so it works only in that room. A room made with
+`playerToken: (playerId) => string` instead asks that function for a player's token every time,
+and accepts the token of every player the game has and has not lost. A room made later around the
+same game, restored from a snapshot, therefore accepts the tokens those players were given
+before. The room keeps the function's results in memory like any other token; it never puts one in
+the game state. What makes such a token unguessable is the function's business, not the room's.
 
 **Leave.** A player may `leave` while the game is in the lobby. The room issues `REMOVE_PLAYER` for
 that player, and on success invalidates the token, frees the place and tells everyone. After the

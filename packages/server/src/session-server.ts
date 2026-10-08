@@ -46,6 +46,8 @@ export interface SessionServerOptions {
   readonly clock?: Clock;
   readonly host?: string;
   readonly createToken?: () => string;
+  /** The key player tokens are worked out from. See the registry's `tokenKey`. */
+  readonly tokenKey?: Uint8Array;
 }
 
 export interface SessionServer {
@@ -90,6 +92,7 @@ export async function startSessionServer(
   const registry = createSessionRegistry({
     store: options.store,
     ...(options.createToken ? { createToken: options.createToken } : {}),
+    ...(options.tokenKey ? { tokenKey: options.tokenKey } : {}),
   });
   let stopping: Promise<RegistryShutdownResult> | undefined;
 

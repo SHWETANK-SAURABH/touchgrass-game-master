@@ -246,9 +246,10 @@ with an unreachable MongoDB server that can be the driver's full wait.
 Bearer tokens and connections are not part of a snapshot, so they are never stored.
 
 - Loading a game creates a new `GameSession` and a new `Room` around it.
-- The room starts with no connections and a new host token.
-- Every player is still in the game, but no token issued before works: a player cannot resume, and
-  the old host token is refused.
+- The room starts with no connections and a new host token. The old host token is refused.
+- Every player is still in the game. Behind `startPersistentServer` no player token issued before
+  works, so a player cannot resume. Behind a registry a player's token is the same in every room
+  of their session, so they can: see [Reconnecting](#reconnecting).
 
 One server is one room around one session. A loaded session is the one the room is built around; it
 is not copied.
@@ -306,7 +307,8 @@ for an id that is loaded.
   nothing is left: no entry, no room, no token, and the id can be tried again.
 - **Load.** `load` of a loaded id is not an error: it returns the same handle and does not read the
   store. Loads that overlap share one restore and one handle, or one failure. A failed load is not
-  remembered. A loaded game always gets a new room and a new host token.
+  remembered. A loaded game always gets a new room and a new host token; its players keep their
+  tokens.
 - **Delete, unload and ending a game are three things.** Ending a game is the `ABORT_SESSION` host
   command. Unloading is the handle's `close()` (discard unsaved changes) or `shutdown()` (save them
   first); either removes it from the registry. `delete` removes the stored snapshot, and refuses a
@@ -423,8 +425,8 @@ before it stops as well.
   nothing, and its `save()` returns `STORAGE_ERROR`, so it can neither change the game nor write a
   snapshot back.
 - A later connection to the same address loads the session again from the store, into a new room
-  with a new host token. No token from the old room works. If the session was still being saved,
-  the new connection waits for that save.
+  with a new host token. The old host token does not work there; a player's token does. If the
+  session was still being saved, the new connection waits for that save.
 - `registry.delete` still refuses a loaded session. After unloading and deleting, connecting to
   that address is `SESSION_NOT_FOUND`.
 
@@ -440,9 +442,107 @@ closed. It returns the registry's result, and calling it again returns the same 
 
 **What it does not do.** Nothing here is authentication: anyone who can reach the port and knows
 a session id can connect to it, which also loads it if it is stored. Nothing evicts a loaded
-session, advances time, or saves on its own. There is no reconnect beyond the existing `resume`
-within one loaded room, and no development command starts this server yet; `npm run server:dev`
-is still the single-game server.
+session, advances time, or saves on its own. No development command starts this server yet;
+`npm run server:dev` is still the single-game server.
+
+## Reconnecting
+
+A player who loses their connection comes back with the message that already existed for it:
+
+```
+connect to  ws://host/sessions/<sessionId>     the address chooses the session
+send        { "type": "resume", "token": … }   the token chooses the player in it
+receive     { "type": "joined", "playerId": …, "state": … }
+```
+
+**A dropped socket removes nothing from the game.** The room forgets the connection: it gets no
+more broadcasts and can send nothing. The player, their role, their score and their place stay
+exactly as they were, the game is not paused, and nobody is told. Only leaving in the lobby, or
+being removed by the host, takes a player out; that is unchanged.
+
+**It works across a reload.** A session can be unloaded and loaded again between the drop and the
+return, and the player is the same player:
+
+```
+room 1  ──  player drops  ──  session unloaded, room 1 closed for good
+                                   ▼
+player connects again  ──  registry loads the session  ──  room 2, new
+                                   ▼
+resume  ──  the same player id, with the state that was stored
+```
+
+- **Identity comes from the stored game.** Room 2 knows nothing of room 1. It is built around the
+  restored `GameSession`, and a returning player is whoever the stored game says has that id:
+  the same name, role, readiness and score. Nothing in memory is carried from the old room, and
+  nothing a returning client does can reach the old room or the old session object.
+- **What was not saved is not there.** A player whose join was never saved (the session was
+  unloaded with `close()`, or the process died) is not in the stored game, and their token is
+  `INVALID_TOKEN`.
+- **The host token is not kept.** A reloaded session has a new host token, given to whoever
+  holds the handle.
+
+**How a token survives without being stored.** A registry does not use random player tokens. It
+works each one out from three things:
+
+| Input          | Why                                                             |
+| -------------- | --------------------------------------------------------------- |
+| A key          | Held in memory by the registry. Without it no token can be made |
+| The session id | A token is for one session and is refused in every other        |
+| The player id  | A token is for one player and says nothing about another's      |
+
+The same three always give the same token (an HMAC-SHA-256), so a new room for the same session
+accepts the token a player was given in an earlier one. No token, and nothing derived from one, is
+written to the game state, a snapshot or the database, and the stored document is unchanged.
+
+- By default the key is random and made with the registry. Tokens then last as long as that
+  registry: they survive any number of unloads and reloads, and die with the process.
+- `createSessionRegistry({ store, tokenKey })` and `startSessionServer({ store, port, tokenKey })`
+  take a key instead (at least 32 random bytes). A later process given the same key and the same
+  store accepts the same tokens. Nothing here reads such a key from the environment or generates
+  and keeps one for you; an application that wants reconnection across restarts must supply it,
+  and must treat it as the credential it is.
+
+**What a token can and cannot do.**
+
+| Presented                                         | Result                                     |
+| ------------------------------------------------- | ------------------------------------------ |
+| A player's own token, at their session's address  | `joined` as that player                    |
+| An unknown, altered or truncated token            | `INVALID_TOKEN`                            |
+| A token from another session                      | `INVALID_TOKEN`                            |
+| A player id, or the host token, as a player token | `INVALID_TOKEN`                            |
+| The token of a player who left or was removed     | `INVALID_TOKEN`                            |
+| Any token, from a connection already a player     | `ALREADY_JOINED`                           |
+| Any token, at the address of a deleted session    | `SESSION_NOT_FOUND` at connect; never read |
+| Any token, while the server is shutting down      | `SESSION_CLOSED` at connect; never read    |
+
+A refused resume changes nothing in the game and binds nothing. A token is still a bearer
+capability, not authentication: whoever holds it is that player.
+
+**Taking over a live connection.** If the player's earlier socket is still attached when they
+resume, the new connection replaces it. The old one is unbound, sent `CONNECTION_REPLACED` and
+closed, so a player never has two sockets that can act. Two resumes for the same player are
+handled in the order the server reads them; the later one is the player and the earlier one is
+closed.
+
+**Timing.** These follow from what was already there, not from any wait or timeout:
+
+- A room handles one frame at a time, so a command and a disconnect, or two resumes, cannot
+  interleave.
+- Connections that arrive together for an unloaded session share one load and one room.
+- A connection that arrives while its session is making its final save waits for that save and
+  resumes into what it stored.
+- A session unloaded just after a resume closes that connection with the rest.
+
+**Limits.**
+
+- One process. Nothing here lets two processes serve one session, and a token works on another
+  process only if that process was given the same key.
+- A token cannot be changed or revoked while its player is in the game. If one leaks, the only
+  remedy is removing the player.
+- `startPersistentServer` still uses random per-room tokens, so reconnecting after that server
+  restarts is not possible.
+- A client is told nothing it missed while away except the current state in the `joined` reply.
+  There is no replay of the updates in between.
 
 ## Tests
 
@@ -460,8 +560,8 @@ it afterwards.
 
 Autosave, saving per action, retries, transactions, revision checks, locks, creating a session
 over the network, join-code routing, eviction of finished games, authentication, stored tokens,
-reconnecting old clients after a restore, several servers sharing a game, Redis, and any adjustment
-of a running game's clock on load.
+token rotation, replaying missed updates to a returning client, several servers sharing a game,
+Redis, and any adjustment of a running game's clock on load.
 
 ## Dependencies
 

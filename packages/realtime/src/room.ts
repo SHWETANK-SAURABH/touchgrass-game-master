@@ -126,6 +126,17 @@ export interface RoomOptions {
   readonly createPlayerId?: () => string;
   /** Makes a new player token. Defaults to 32 random bytes. */
   readonly createToken?: () => string;
+  /**
+   * Makes the token of a given player, the same one every time it is asked.
+   *
+   * With this, a player's token does not depend on this room having been the
+   * one they joined through: every player the game has, and has not lost, can
+   * resume with their token, including in a room made later around the same
+   * game restored. `createToken` is then not used for players.
+   *
+   * It must be unguessable, and different for every player and every game.
+   */
+  readonly playerToken?: (playerId: string) => string;
   readonly maxMessageBytes?: number;
 }
 
@@ -144,6 +155,7 @@ export function createRoom(options: RoomOptions): Room {
   const { session, hostToken } = options;
   const createPlayerId = options.createPlayerId ?? mintPlayerId;
   const mintToken = options.createToken ?? createToken;
+  const playerToken = options.playerToken;
   const maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
 
   /** Which player each bound connection is. */
@@ -205,6 +217,13 @@ export function createRoom(options: RoomOptions): Room {
     const known = new Set([...connectionOf.keys(), ...playerForToken.values()]);
     for (const playerId of known) {
       if (!present.has(playerId)) retire(playerId);
+    }
+    // Tokens that can be made again are made for every player the game has, so
+    // one who joined through an earlier room of this game can resume in this one.
+    if (playerToken) {
+      for (const playerId of present) {
+        if (!known.has(playerId)) playerForToken.set(playerToken(playerId), playerId);
+      }
     }
   };
 
@@ -276,7 +295,7 @@ export function createRoom(options: RoomOptions): Room {
     );
     if (!added.ok) return send(connection, rejection(added.error));
 
-    const token = mintToken();
+    const token = playerToken ? playerToken(playerId) : mintToken();
     playerForToken.set(token, playerId);
     bind(connection, playerId);
     // The only time the token is ever sent, and only to the connection it is for.
@@ -299,6 +318,10 @@ export function createRoom(options: RoomOptions): Room {
     const previous = connectionOf.get(playerId);
     if (previous) {
       forget(previous);
+      attached.delete(previous);
+      // Told why, then closed. It is nobody from here on: anything it still
+      // sends comes from a connection that has not joined.
+      fail(previous, 'CONNECTION_REPLACED');
       previous.close();
     }
     bind(connection, playerId);

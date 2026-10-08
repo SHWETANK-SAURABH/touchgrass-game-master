@@ -398,7 +398,7 @@ describe('loading through a registry', () => {
     expect(registry.get('a')).toBeUndefined();
   });
 
-  it('gives a session that is loaded again nothing of its old room', async () => {
+  it('gives a session that is loaded again a new room and host token, and its players their tokens', async () => {
     const { registry } = setup();
     const before = unwrap(await registry.create(createCommand('a'), at(0)));
     const player = change(before);
@@ -410,18 +410,23 @@ describe('loading through a registry', () => {
     expect(after.session).not.toBe(before.session);
     expect(after.room).not.toBe(before.room);
     expect(after.hostToken).not.toBe(before.hostToken);
-    // The player is still in the game, and no old capability works.
+    // The player is still in the game. No connection came across, and the old
+    // host token is nothing here.
     expect(names(after)).toEqual(['Ada']);
     expect(after.room.connectionCount()).toBe(0);
     const returning = connection();
-    send(after.room, returning, { type: 'resume', token: player.token });
     send(after.room, returning, { type: 'host_auth', token: before.hostToken });
-    expect(returning.take()).toEqual([
-      { type: 'error', code: 'INVALID_TOKEN' },
-      { type: 'error', code: 'INVALID_TOKEN' },
-    ]);
+    expect(returning.take()).toEqual([{ type: 'error', code: 'INVALID_TOKEN' }]);
     send(after.room, returning, { type: 'host_auth', token: after.hostToken });
     expect(after.room.isHost(returning)).toBe(true);
+
+    // The player's own token is the one they always had: they can come back.
+    const back = connection();
+    send(after.room, back, { type: 'resume', token: player.token });
+    expect(back.take().map((message) => [message.type, message.playerId])).toEqual([
+      ['joined', player.playerId],
+    ]);
+    expect(after.room.playerIdOf(back)).toBe(player.playerId);
   });
 });
 

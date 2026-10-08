@@ -125,6 +125,8 @@ export const TRANSPORT_ERROR_CODES = [
   'SESSION_UNAVAILABLE',
   /** The session is no longer being served. The connection is then closed. */
   'SESSION_CLOSED',
+  /** Another connection resumed as this player. This one is then closed. */
+  'CONNECTION_REPLACED',
 ] as const;
 export type TransportErrorCode = (typeof TRANSPORT_ERROR_CODES)[number];
 

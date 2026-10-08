@@ -320,6 +320,7 @@ describe('the application layer keeps no module-level state and no storage of it
       'index.ts',
       'persistent-server.ts',
       'persistent-sessions.ts',
+      'player-tokens.ts',
       'session-handle.ts',
       'session-registry.ts',
       'session-server.ts',
