@@ -1,5 +1,5 @@
 import { type Result, ok } from '@touchgrass/shared';
-import type { GameState } from '@touchgrass/game-engine';
+import { type GameState, isTerminalStatus } from '@touchgrass/game-engine';
 import type { GameSession } from '@touchgrass/game-session';
 import { type Room, createRoom, createToken } from '@touchgrass/realtime';
 import type { SessionPersistenceError } from '@touchgrass/session-persistence';
@@ -44,6 +44,8 @@ export function hostSession(
     readonly createToken?: () => string;
     /** Makes a player's token, the same every time. See the room's `playerToken`. */
     readonly playerToken?: (playerId: string) => string;
+    /** Told how many connections the room has. See the room's `onConnections`. */
+    readonly onConnections?: (count: number) => void;
   } = {},
 ): HostedSession {
   const hostToken = (options.createToken ?? createToken)();
@@ -72,6 +74,11 @@ export interface SessionHandle extends HostedSession {
    * has overwritten or deleted what is stored.
    */
   readonly hasUnsavedChanges: () => boolean;
+  /**
+   * Whether the game is over: completed or aborted, as the engine defines a
+   * terminal status. A finished game stays loaded and stored; this only says so.
+   */
+  readonly isFinished: () => boolean;
   /**
    * Stops without saving: whatever has changed since the last save is
    * discarded. A save that was already asked for is allowed to finish. Calling
@@ -213,6 +220,7 @@ export function createSessionHandle(options: SessionHandleOptions): SessionHandl
     ...hosted,
     save,
     hasUnsavedChanges,
+    isFinished: () => isTerminalStatus(hosted.session.getState().status),
     async close() {
       if (closed) return;
       closed = true;

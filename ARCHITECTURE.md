@@ -266,7 +266,9 @@ order give the same roles on any host.
 | Many loaded games in one process                  | Phase 5M: `createSessionRegistry`; no network routing yet        |
 | One listener for many games                       | Phase 5N: `startSessionServer`, `/sessions/<sessionId>`          |
 | Reconnect with `resume`, across a reload          | Phase 5O: player tokens worked out from a key, never stored      |
-| Authentication, eviction, token rotation          | Later                                                            |
+| Idle and finished sessions evicted from memory    | Phase 5P: `evict`, `evictIdle`; saved first, never deleted       |
+| Many games, development entry point               | Phase 5P: `npm run sessions:dev`                                 |
+| Authentication, token rotation                    | Later                                                            |
 
 ---
 
@@ -565,7 +567,7 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
   - **Isolation is per room.** Connections, tokens, the host role and broadcasts belong to one
     room. Sessions share the listener and the store and nothing else; there is no lock across them.
   - **Still development-stage.** No authentication: knowing a session id is enough to connect, and
-    connecting loads a stored session. No eviction, no automatic time, and one process only.
+    connecting loads a stored session. No automatic time, and one process only.
 - **Reconnect is `resume` (Phase 5O).** A player who lost their socket connects to the same
   address and sends the existing `resume` message with their token. No message was added.
   - **A dropped socket removes nothing from the game.** The room forgets the connection; the
@@ -589,6 +591,35 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
     or binding the connection.
   - **Not here.** Token rotation or revocation, replay of missed updates, a kept host token, and
     anything across processes beyond sharing a key.
+- **A bounded session lifecycle (Phase 5P).** A loaded session is `active` (it has a connection),
+  `idle` (it has none), `finished` (the engine's terminal status, `completed` or `aborted`) or
+  `closing`; one that is in none of these is not in memory and is still stored.
+  - **Evicting is not deleting.** Eviction releases the `GameSession`, room and handle and keeps
+    the snapshot. Only `registry.delete` removes a stored game, and nothing calls it automatically.
+  - **Use is a connection.** A session's idle time runs from the last moment a connection arrived
+    or left, or from its load. The room reports its connection count through `onConnections`; the
+    registry stamps the time from an injected clock. A save, a tick or a trusted direct command is
+    not use, so nothing internal can pin a session in memory.
+  - **The policy is two numbers.** `evictIdle()` evicts sessions with no connection for `idleMs`
+    (default 30 minutes), or `finishedIdleMs` (default 0) once the game is over. A session with a
+    connection is never evicted.
+  - **Persist, then release.** An eviction saves a session that has unsaved changes, behind any
+    save under way. If the save fails the session stays loaded, usable and unsaved, and the error
+    is returned. If a connection arrived or the game changed during the save, the eviction stands
+    down. Only a saved, unused session is unloaded, and the check and the unload happen in one
+    turn. Overlapping evictions are one eviction; different sessions evict independently.
+  - **Reloadable.** Connecting again loads the session into new objects, and Phase 5O's tokens
+    let the same players resume. Nothing of the evicted handle or room can reach the new one.
+  - **No timer in the library.** The registry evicts when asked. The multi-session development
+    server, `npm run sessions:dev`, holds the one timer, which only calls `evictIdle()`.
+  - **Observable, minimally.** An optional `onEvent` is told `created`, `loaded`, `idle`,
+    `eviction_started`, `evicted`, `eviction_failed` and `unloaded`, with a session id, a time and
+    at most an error code. No token and no game data.
+  - **Shutdown order.** New connections are refused; no new session operation starts and those
+    under way are waited for; each session's room is closed, it is saved if unsaved, and it is
+    unloaded; the store closes; the listener stops.
+  - **Still one process.** No coordination between processes, no cap on loaded sessions, no forced
+    eviction, and no game clock for a session nobody is connected to.
 - **A server makes its saves one at a time (Phase 5L).** Saves on one `PersistentServer` wait for
   the one before, so the store never has two writes from that server in flight and a later save
   never stores an older state. A waiting save captures the game when it starts, not when it was
@@ -1025,7 +1056,7 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
 | 5H      | MongoDB adapter for the SessionStore interface                                                              | **Complete** |
 | 5I      | Persistent server: create, load, explicit save and shutdown around one game                                 | **Complete** |
-| Later   | Save cadence, authentication and TLS, session eviction, token persistence, Redis, Game Master, deployment   | Planned      |
+| Later   | Save cadence, authentication and TLS, token persistence, Redis, Game Master, deployment                     | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

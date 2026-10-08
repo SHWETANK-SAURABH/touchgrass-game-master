@@ -30,7 +30,8 @@
     "ai:down": "docker compose down",
     "ai:live": "vitest run --config vitest.live.config.mts",
     "realtime:dev": "tsx packages/realtime/src/dev.ts",
-    "server:dev": "tsx packages/server/src/dev.ts"
+    "server:dev": "tsx packages/server/src/dev.ts",
+    "sessions:dev": "tsx packages/server/src/dev-sessions.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

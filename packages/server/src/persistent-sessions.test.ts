@@ -316,6 +316,7 @@ describe('the application layer keeps no module-level state and no storage of it
   it('has no map of sessions, rooms or stores, no singleton and no timer', () => {
     expect(sources.map(([name]) => name).sort()).toEqual([
       'config.ts',
+      'dev-sessions.ts',
       'dev.ts',
       'index.ts',
       'persistent-server.ts',
@@ -327,14 +328,19 @@ describe('the application layer keeps no module-level state and no storage of it
     ]);
     for (const [name, source] of sources) {
       const code = strip(source);
-      expect(code, name).not.toMatch(/new Set|new WeakMap|\bclass\b|setInterval|setTimeout/);
+      expect(code, name).not.toMatch(/new Set|new WeakMap|\bclass\b|setTimeout/);
+      // One timer exists: the multi-session development server's sweep, which
+      // only asks the registry to look. Nothing in the library has a timer.
+      expect(code.match(/setInterval/g) ?? [], name).toHaveLength(
+        name === 'dev-sessions.ts' ? 1 : 0,
+      );
       // One table exists: the registry's own, made inside each registry.
       const tables = code.split('\n').filter((line) => line.includes('new Map'));
       expect(tables, name).toEqual(
         name === 'session-registry.ts' ? ['  const entries = new Map<string, Entry>();'] : [],
       );
       expect(code, name).not.toMatch(/retry|redis|jsonwebtoken|\bjwt\b|autosave/i);
-      if (name === 'dev.ts') continue;
+      if (name === 'dev.ts' || name === 'dev-sessions.ts') continue;
       // Outside the development entry point there is no module-level state at all.
       const topLevel = code
         .split('\n')
@@ -357,7 +363,7 @@ describe('the application layer keeps no module-level state and no storage of it
     }
     // Only the development entry point makes a MongoDB store, from configuration.
     const makers = sources.filter(([, source]) => /createMongoSessionStore/.test(source));
-    expect(makers.map(([name]) => name)).toEqual(['dev.ts']);
+    expect(makers.map(([name]) => name)).toEqual(['dev-sessions.ts', 'dev.ts']);
   });
 
   it('is the only package that puts the store, the lifecycle and the transport together', () => {

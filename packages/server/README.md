@@ -55,6 +55,44 @@ The terminal is the only way to ask for a save. There is no network command for 
 authenticates who would be asking. Exposing save, load or delete to clients needs an authentication
 decision first.
 
+### Many games: `npm run sessions:dev`
+
+```
+MONGODB_URI=mongodb://127.0.0.1:27017 npm run sessions:dev
+```
+
+This starts the multi-session server: one process, one listener, one MongoDB store, one registry,
+and any number of games at `ws://localhost:<port>/sessions/<sessionId>`. `npm run server:dev` is
+unchanged and is still the single-game server.
+
+It reads the four variables above that are not about one game (`MONGODB_*`, `SERVER_PORT`), and
+three of its own:
+
+| Variable                   | Meaning                                              | Default    |
+| -------------------------- | ---------------------------------------------------- | ---------- |
+| `SESSION_IDLE_MS`          | Evict a session that has had no connection this long | 30 minutes |
+| `SESSION_FINISHED_IDLE_MS` | The same, once its game is over                      | 0          |
+| `SESSION_SWEEP_MS`         | How often to look for sessions to evict              | 1 minute   |
+
+Sessions are made and managed from its terminal, because nothing authenticates a network caller:
+
+| Command           | Does                                                                       |
+| ----------------- | -------------------------------------------------------------------------- |
+| `create [gameId]` | Makes a game (default `tag`), prints its address, join code and host token |
+| `list`            | The sessions in memory, each with its state and connection count           |
+| `save <id>`       | Saves one now                                                              |
+| `evict <id>`      | Releases one from memory, saving it first if needed                        |
+| `quit`            | Saves what is unsaved and stops. Ctrl+C does the same                      |
+
+It prints one line for each thing that happens to a session (`created`, `loaded`, `idle`,
+`eviction_started`, `evicted`, `eviction_failed`, `unloaded`) with the session id and, for a
+failure, an error code. It never prints a player token or anything from a game. A stored session
+that is not in memory is loaded when someone connects to it. If a session cannot be saved on the
+way out, the errors are printed and the exit status is non-zero.
+
+This entry point holds the only timer in the package: the sweep, which does nothing but call
+`registry.evictIdle()`. It is stopped first on shutdown.
+
 ## API
 
 ```ts
@@ -70,13 +108,15 @@ startPersistentServer({ store, game, port, clock? }): Promise<Result<PersistentS
 // game: { create: command } | { load: sessionId }
 // PersistentServer: a SessionHandle, plus { port }
 
-createSessionRegistry({ store }): SessionRegistry
-// { create(command, ctx), load(sessionId), get(sessionId), delete(sessionId), shutdown() }
+createSessionRegistry({ store, clock?, idleMs?, finishedIdleMs?, onEvent? }): SessionRegistry
+// { create(command, ctx), load(sessionId), get(sessionId), delete(sessionId),
+//   evict(sessionId), evictIdle(), sessions(), shutdown() }
 
-startSessionServer({ store, port, clock? }): Promise<Result<SessionServer, …>>
+startSessionServer({ store, port, clock?, idleMs?, … }): Promise<Result<SessionServer, …>>
 // SessionServer: { port, registry, socketCount(), shutdown() }
 
 parseServerConfig(env): Result<ServerConfig, ServerConfigError>
+parseLifecycleConfig(env): Result<LifecycleConfig, ServerConfigError>
 ```
 
 ### Create
@@ -351,7 +391,8 @@ refuse new work  →  wait for what is under way  →  shut down every session  
   it.
 - It is not a lock. The rule is per registry, in one process. Another process, or a second registry
   over the same store, can load the same session, and the last save wins.
-- It does not evict. A finished game stays loaded until its handle is closed or shut down.
+- It has no timer. It evicts only when `evict` or `evictIdle` is called; see
+  [Session lifecycle](#session-lifecycle-and-eviction).
 
 Nothing is kept at module level. Two registries are independent.
 
@@ -441,9 +482,151 @@ unsaved changes, and closes the store. The listener then stops and any socket st
 closed. It returns the registry's result, and calling it again returns the same result.
 
 **What it does not do.** Nothing here is authentication: anyone who can reach the port and knows
-a session id can connect to it, which also loads it if it is stored. Nothing evicts a loaded
-session, advances time, or saves on its own. No development command starts this server yet;
-`npm run server:dev` is still the single-game server.
+a session id can connect to it, which also loads it if it is stored. It advances no time, saves
+nothing on its own, and has no timer: sessions are evicted when something calls
+`server.registry.evictIdle()`, as `npm run sessions:dev` does.
+
+## Session lifecycle and eviction
+
+```
+created ──► active ◄──► idle ──► (saved) ──► evicted ──► loaded again ──► …
+               │          ▲
+               └► finished ┘        deleting is separate, and never automatic
+```
+
+A session in memory is in one of four states. `registry.sessions()` lists them.
+
+| State      | Means                                                     |
+| ---------- | --------------------------------------------------------- |
+| `active`   | It has at least one connection                            |
+| `idle`     | It has none                                               |
+| `finished` | Its game is over, with connections or without             |
+| `closing`  | It is being evicted or unloaded                           |
+| (closed)   | Not listed: it is not in memory. It is still in the store |
+
+`finished` is not a new idea of this package. It is the engine's own terminal status, `completed`
+or `aborted`, read through `handle.isFinished()`. Finishing a game deletes nothing and unloads
+nothing by itself.
+
+**Evicting is not deleting.** Eviction releases what a session holds in memory: its
+`GameSession`, room and handle. The stored snapshot is kept, and the session can be loaded again
+at any time. `registry.delete` is the only thing that removes a stored game, and nothing calls it
+for you.
+
+### What counts as use
+
+A session is in use while its room has a connection: any socket attached to it, joined or not,
+player or host. Its idle time is counted from the last moment a connection arrived or went away,
+or from when it was created or loaded if it never had one.
+
+Nothing else moves that time. A message needs a connection, so messages are covered. A save, a
+`tick`, and anything trusted code does directly to the session are not use: none of them can keep
+a session in memory. Unsaved changes they leave are saved before eviction all the same.
+
+### The policy
+
+```ts
+createSessionRegistry({ store, clock, idleMs, finishedIdleMs });
+await registry.evictIdle(); // evict everything that is due, now
+```
+
+- A session is **due** when it has no connection and has had none for `idleMs`, or for
+  `finishedIdleMs` if its game is over.
+- `idleMs` defaults to 30 minutes and `finishedIdleMs` to 0, so a finished game goes at the next
+  sweep after its last connection leaves. Both defaults are constants of the registry
+  (`DEFAULT_SESSION_IDLE_MS`, `DEFAULT_FINISHED_IDLE_MS`) and are written nowhere else.
+- The time comes from the registry's `clock`. The registry never sleeps and never schedules:
+  `evictIdle()` looks once, when called. How often to call it is the application's choice.
+- A session with a connection is never due, however old it is. Nothing here disconnects a player
+  to make room.
+
+### What an eviction does
+
+`registry.evict(id)` and each eviction inside `evictIdle()` do the same thing:
+
+```
+no connection?  →  save if unsaved  →  still unused and unchanged?  →  close room, unload
+      │                  │                        │
+      └ SESSION_IN_USE   └ the save's error       └ SESSION_IN_USE
+        nothing done       still loaded             still loaded
+```
+
+1. A session with a connection is refused with `SESSION_IN_USE`. Nothing is saved or closed.
+2. If it has unsaved changes it is saved, through its own `save()`, so behind any save already
+   under way. A session with nothing unsaved is not written.
+3. **If that save fails, the session is not evicted.** The error is returned, and the session
+   stays loaded, usable and marked unsaved. Nothing is discarded. It can be evicted again later;
+   each `evictIdle()` sweep tries a due session once.
+4. While the save was at the store the session was still loaded and reachable. If a connection
+   arrived or the game changed in that time, the eviction stands down with `SESSION_IN_USE`. The
+   returning player wins, and what changed is unsaved, not lost.
+5. Otherwise, in the same turn as that check, the room is closed and the handle unloaded. From
+   then on the old handle cannot save and the old room accepts nothing, as for any unloaded
+   handle.
+
+- Evicting a session that is not in memory succeeds: there is nothing to release.
+- Calls that overlap share one eviction: one save, one unload.
+- Sessions are evicted independently and at the same time. One session's failure or slow save
+  does not hold up another, and a session that is not due is not touched.
+- An eviction asked for while the session is being created or loaded waits, then evicts it.
+- A forced eviction of a session that has connections is not offered. Trusted code that must
+  unload one calls its handle's `shutdown()`, which tells and closes its connections first.
+
+### Coming back
+
+A connection to `/sessions/<sessionId>` after an eviction loads the session again: a new
+`GameSession`, a new room, a new handle, and the same players with the same tokens, as
+[Reconnecting](#reconnecting) describes. Nothing of the evicted room or handle is reused, and
+neither can reach the new one.
+
+### Being told
+
+```ts
+createSessionRegistry({ store, onEvent: (event) => { … } });
+// { type, sessionId, at, code? }
+```
+
+| Event              | When                                                                             |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `created`          | A new session was saved and loaded                                               |
+| `loaded`           | A stored session was loaded, for the first time or again                         |
+| `idle`             | Its last connection went away                                                    |
+| `eviction_started` | An eviction began                                                                |
+| `evicted`          | It finished: the session is out of memory                                        |
+| `eviction_failed`  | It did not: `code` is the save's error code, or `SESSION_IN_USE`                 |
+| `unloaded`         | A handle was unloaded, by eviction, `close()`, `shutdown()` or registry shutdown |
+
+An event carries the session id, the time and at most an error code. It never carries a token, a
+player, or any part of a game. A listener that throws is ignored. There is no logging framework:
+the development server prints these lines and nothing else does.
+
+### Shutting down
+
+`server.shutdown()` on the multi-session server:
+
+```
+new connections refused
+  → no new create, load, delete or evict; those under way are waited for
+  → every session: room closed (its connections told and closed), saved once if unsaved, unloaded
+  → store closed
+  → listener stopped
+```
+
+It attempts every session whatever happens to the others, closes the store last and once, and
+reports each session that could not be saved. Unlike an eviction, shutdown does not keep a
+session whose save failed: the process is stopping, so the failure is returned and the handle
+still says it has unsaved changes.
+
+### Limits
+
+- **One process.** The registry knows only its own memory. It does not coordinate with another
+  process, and nothing stops two processes loading the same session.
+- **No timer in the library.** Nothing is evicted unless something calls `evictIdle()` or
+  `evict()`. Only `npm run sessions:dev` does so on a schedule.
+- **Connecting loads.** Any connection to a stored session's address loads it, and it then stays
+  for at least the idle time. Nothing limits how many sessions are loaded at once.
+- **An idle session's clock does not run.** Nothing advances game time for a session nobody is
+  connected to, loaded or not.
 
 ## Reconnecting
 
@@ -559,7 +742,8 @@ it afterwards.
 ## Not here
 
 Autosave, saving per action, retries, transactions, revision checks, locks, creating a session
-over the network, join-code routing, eviction of finished games, authentication, stored tokens,
+over the network, join-code routing, a limit on loaded sessions, forced eviction, authentication,
+stored tokens,
 token rotation, replaying missed updates to a returning client, several servers sharing a game,
 Redis, and any adjustment of a running game's clock on load.
 

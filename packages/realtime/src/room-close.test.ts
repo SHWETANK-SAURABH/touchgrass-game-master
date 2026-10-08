@@ -226,3 +226,78 @@ describe('attaching a connection', () => {
     expect(who.take()).toEqual([{ type: 'error', code: 'NOT_JOINED' }]);
   });
 });
+
+describe('being told how many connections a room has', () => {
+  function counting() {
+    const counts: number[] = [];
+    const session = newSession();
+    const room = createRoom({
+      session,
+      hostToken: 'host-token',
+      onConnections: (count) => counts.push(count),
+    });
+    return { room, counts };
+  }
+
+  it('is told when one arrives and when one goes, joined or not, and only then', () => {
+    const { room, counts } = counting();
+    const [silent, player, host] = [connection(), connection(), connection()];
+    room.attach(silent);
+    room.attach(silent);
+    expect(counts).toEqual([1]);
+    join(room, player, 'Ada');
+    send(room, player, { type: 'action', intent: { type: 'PLAYER_READY' } });
+    send(room, host, { type: 'host_auth', token: 'host-token' });
+    send(room, host, 'not a message');
+    expect(counts).toEqual([1, 2, 3]);
+
+    room.disconnect(silent);
+    room.disconnect(silent);
+    room.disconnect(player);
+    room.disconnect(host);
+    expect(counts).toEqual([1, 2, 3, 2, 1, 0]);
+    // A connection the room never knew is not one that went away.
+    room.disconnect(connection());
+    expect(counts).toHaveLength(6);
+  });
+
+  it('counts a taken-over connection as gone at once, and not again when it closes', () => {
+    const session = newSession();
+    const counts: number[] = [];
+    const room = createRoom({ session, onConnections: (count) => counts.push(count) });
+    const old = connection();
+    const token = join(room, old, 'Ada');
+    const fresh = connection();
+    send(room, fresh, { type: 'resume', token });
+    expect(counts).toEqual([1, 2, 1]);
+    room.disconnect(old);
+    expect(counts).toEqual([1, 2, 1]);
+  });
+
+  it('is not told when the room is closed, or by a closed room', () => {
+    const { room, counts } = counting();
+    const who = connection();
+    room.attach(who);
+    room.close();
+    room.attach(connection());
+    send(room, connection(), { type: 'leave' });
+    room.disconnect(who);
+    expect(counts).toEqual([1]);
+  });
+
+  it('carries on when the listener throws', () => {
+    const session = newSession();
+    const room = createRoom({
+      session,
+      onConnections: () => {
+        throw new Error('the listener broke');
+      },
+    });
+    const who = connection();
+    expect(room.attach(who)).toBe(true);
+    join(room, who, 'Ada');
+    expect(room.connectionCount()).toBe(1);
+    room.disconnect(who);
+    expect(room.connectionCount()).toBe(0);
+  });
+});

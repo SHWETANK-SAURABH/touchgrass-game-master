@@ -1,4 +1,4 @@
-import { type Result, err, ok } from '@touchgrass/shared';
+import { type Clock, type Result, err, ok, systemClock } from '@touchgrass/shared';
 import type { EngineContext } from '@touchgrass/game-engine';
 import type { GameSession } from '@touchgrass/game-session';
 import type { SessionPersistenceError } from '@touchgrass/session-persistence';
@@ -33,7 +33,28 @@ import { type SessionHandle, createSessionHandle, hostSession } from './session-
  *
  * A registry attaches no listener. Its handles are reached through their rooms
  * by whatever the application puts in front of them.
+ *
+ * A loaded session is in one of these states, and when it is in none of them it
+ * is closed: not in memory, and still in the store.
+ *
+ *   active     it has at least one connection
+ *   idle       it has none
+ *   finished   its game is over, with connections or without
+ *   closing    it is being evicted or unloaded
+ *
+ * Evicting a session releases what it holds in memory and keeps what is stored.
+ * It is saved first if it has unsaved changes, and it is not released unless
+ * that save succeeded. Deleting is a different operation and is never a
+ * consequence of evicting.
+ *
+ * The registry has no timer. It evicts when `evict` or `evictIdle` is called,
+ * and reads the time, when it needs it, from the clock it was given.
  */
+
+/** A session with no connections for this long may be evicted: thirty minutes. */
+export const DEFAULT_SESSION_IDLE_MS = 30 * 60_000;
+/** The same, for a session whose game is over: as soon as it has no connections. */
+export const DEFAULT_FINISHED_IDLE_MS = 0;
 
 /** The registry is shutting down or has shut down. It does not reopen. */
 export interface RegistryClosedError {
@@ -45,6 +66,48 @@ export interface RegistryClosedError {
 export interface SessionLoadedError {
   readonly code: 'SESSION_LOADED';
   readonly message: string;
+}
+
+/** The session has a connection, or changed while it was being saved. It stays loaded. */
+export interface SessionInUseError {
+  readonly code: 'SESSION_IN_USE';
+  readonly message: string;
+}
+
+export type SessionLifecycleState = 'active' | 'idle' | 'finished' | 'closing';
+
+/** A session that is in memory, and how it stands. One that is not listed is closed. */
+export interface SessionInfo {
+  readonly sessionId: string;
+  readonly state: SessionLifecycleState;
+  /** How many connections its room knows of, joined or not. */
+  readonly connections: number;
+  /** When a connection last arrived or went away, or the session was loaded. */
+  readonly lastActiveAt?: number;
+}
+
+/**
+ * Something that happened to a session. It carries the session id, the time and
+ * at most an error code: never a token, a player or any part of a game.
+ */
+export interface SessionLifecycleEvent {
+  readonly type:
+    'created' | 'loaded' | 'idle' | 'eviction_started' | 'evicted' | 'eviction_failed' | 'unloaded';
+  readonly sessionId: string;
+  readonly at: number;
+  /** For `eviction_failed`: why. */
+  readonly code?: string;
+}
+
+/** What one sweep for unused sessions did. */
+export interface EvictIdleResult {
+  /** Sessions released from memory. */
+  readonly evicted: readonly string[];
+  /** Sessions that were due and could not be saved. They are still loaded. */
+  readonly failed: readonly {
+    readonly sessionId: string;
+    readonly error: SessionPersistenceError;
+  }[];
 }
 
 /** What one registry shutdown could not do. Everything else was done. */
@@ -75,6 +138,17 @@ export interface SessionRegistryOptions {
    * long as the registry does. The key is never stored or sent.
    */
   readonly tokenKey?: Uint8Array;
+  /** Where the time comes from. Defaults to the system clock. */
+  readonly clock?: Clock;
+  /**
+   * How long a session must have been without a connection before `evictIdle`
+   * releases it. Defaults to DEFAULT_SESSION_IDLE_MS.
+   */
+  readonly idleMs?: number;
+  /** The same, for a session whose game is over. Defaults to DEFAULT_FINISHED_IDLE_MS. */
+  readonly finishedIdleMs?: number;
+  /** Told what happens to sessions. A listener that throws is ignored. */
+  readonly onEvent?: (event: SessionLifecycleEvent) => void;
 }
 
 export interface SessionRegistry {
@@ -109,9 +183,36 @@ export interface SessionRegistry {
     sessionId: string,
   ) => Promise<Result<void, SessionPersistenceError | SessionLoadedError | RegistryClosedError>>;
   /**
+   * Releases a loaded session from memory and keeps it in the store.
+   *
+   *   1. a session with a connection is refused with SESSION_IN_USE;
+   *   2. it is saved if it has unsaved changes, after any save under way;
+   *   3. if that save fails, the failure is returned and the session stays
+   *      loaded, usable and unsaved;
+   *   4. if a connection arrived or the game changed meanwhile, it is
+   *      SESSION_IN_USE and stays loaded;
+   *   5. otherwise its room is closed and its handle unloaded.
+   *
+   * A session that is not in memory is already evicted: that is success.
+   * Calls that overlap share one eviction. Nothing is deleted.
+   */
+  readonly evict: (
+    sessionId: string,
+  ) => Promise<Result<void, SessionPersistenceError | SessionInUseError | RegistryClosedError>>;
+  /**
+   * Evicts every session that is due: no connections, and none for at least
+   * `idleMs`, or `finishedIdleMs` if its game is over. Each is evicted as
+   * `evict` does it, independently of the others. A session that turned out to
+   * be in use is left alone and is in neither list.
+   */
+  readonly evictIdle: () => Promise<EvictIdleResult>;
+  /** The sessions in memory and how each stands. The store is not asked. */
+  readonly sessions: () => readonly SessionInfo[];
+  /**
    * Shuts down every loaded session, then closes the store, once.
    *
-   * From the moment it is called, `create`, `load` and `delete` are refused.
+   * From the moment it is called, `create`, `load`, `delete` and `evict` are
+   * refused. An eviction under way is waited for.
    * Operations already under way are waited for, and a session one of them
    * loads is shut down with the rest. Every session is attempted, whatever
    * happens to the others, and the store is closed last, whatever happened.
@@ -121,9 +222,20 @@ export interface SessionRegistry {
   readonly shutdown: () => Promise<RegistryShutdownResult>;
 }
 
+/** A loaded session and what the registry knows of its use. */
+interface Loaded {
+  readonly handle: SessionHandle;
+  /** How many connections its room knows of. */
+  connections: number;
+  /** When a connection last arrived or went away, or the session was loaded. */
+  lastActiveAt: number;
+  /** An eviction under way, for other callers of `evict` to share. */
+  evicting?: Promise<Result<void, SessionPersistenceError | SessionInUseError>>;
+}
+
 /** What the registry holds for an id: a loaded session, or an operation on it. */
 type Entry =
-  | { readonly handle: SessionHandle }
+  | Loaded
   | {
       readonly kind: 'creating' | 'loading' | 'unloading' | 'deleting';
       /** Settles, without a value, when the operation is over. */
@@ -137,7 +249,18 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
   const sessions = createPersistentSessions(store);
   const entries = new Map<string, Entry>();
   const playerTokens = createPlayerTokens(options.tokenKey);
+  const clock = options.clock ?? systemClock;
+  const idleMs = options.idleMs ?? DEFAULT_SESSION_IDLE_MS;
+  const finishedIdleMs = options.finishedIdleMs ?? DEFAULT_FINISHED_IDLE_MS;
   let shuttingDown: Promise<RegistryShutdownResult> | undefined;
+
+  const emit = (type: SessionLifecycleEvent['type'], sessionId: string, code?: string): void => {
+    try {
+      options.onEvent?.({ type, sessionId, at: clock.now(), ...(code ? { code } : {}) });
+    } catch {
+      // Being told is a courtesy. A listener that fails changes nothing here.
+    }
+  };
 
   const registryClosed = (): RegistryClosedError => ({
     code: 'REGISTRY_CLOSED',
@@ -172,13 +295,22 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
    * `close()` or `shutdown()`, its id is held until it has finished and then
    * freed; the store is left open.
    */
-  const register = (session: GameSession): SessionHandle => {
+  const register = (session: GameSession, how: 'created' | 'loaded'): SessionHandle => {
     let unloading: { readonly release: () => void } | undefined;
     let unloaded = false;
+    // Activity is a connection arriving or going away. Nothing else moves the
+    // time: not a message, not a save, not anything trusted code does.
+    const use = { connections: 0, lastActiveAt: clock.now() };
     const handle = createSessionHandle({
       hosted: hostSession(session, {
         ...(options.createToken ? { createToken: options.createToken } : {}),
         playerToken: playerTokens(session.id),
+        onConnections: (count) => {
+          const emptied = count === 0 && use.connections > 0;
+          use.connections = count;
+          use.lastActiveAt = clock.now();
+          if (emptied) emit('idle', session.id);
+        },
       }),
       // A handle that has been unloaded no longer speaks for its session: the
       // id may have been loaded again, or its snapshot deleted.
@@ -194,10 +326,48 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
       afterStop: () => {
         unloaded = true;
         unloading?.release();
+        emit('unloaded', session.id);
       },
     });
-    entries.set(session.id, { handle });
+    entries.set(session.id, Object.assign(use, { handle }));
+    emit(how, session.id);
     return handle;
+  };
+
+  /**
+   * One eviction of a loaded session. The session stays registered, and so
+   * reachable, until the moment it is known to be saved and unused; the check
+   * and the start of the unload happen in one turn, so nothing can come between.
+   */
+  const evictLoaded = async (
+    sessionId: string,
+    entry: Loaded,
+  ): Promise<Result<void, SessionPersistenceError | SessionInUseError>> => {
+    const { handle } = entry;
+    const inUse = (): Result<void, SessionInUseError> =>
+      err({ code: 'SESSION_IN_USE', message: `The session "${sessionId}" is in use.` });
+    if (entry.connections > 0) return inUse();
+    emit('eviction_started', sessionId);
+
+    // Through the handle's own save, so it waits for any save under way.
+    if (handle.hasUnsavedChanges()) {
+      const saved = await handle.save();
+      if (!saved.ok) {
+        emit('eviction_failed', sessionId, saved.error.code);
+        return saved;
+      }
+    }
+    // Its holder unloaded it while it was being saved. It is out of memory.
+    if (entries.get(sessionId) !== entry) return ok(undefined);
+    // A connection arrived, or the game changed, during the save. It is wanted.
+    if (entry.connections > 0 || handle.hasUnsavedChanges()) {
+      emit('eviction_failed', sessionId, 'SESSION_IN_USE');
+      return inUse();
+    }
+    // Saved and unused. From this line the room is closed and the id is held.
+    await handle.close();
+    emit('evicted', sessionId);
+    return ok(undefined);
   };
 
   const stopAll = async (): Promise<RegistryShutdownResult> => {
@@ -206,7 +376,9 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
       const all = [...entries.values()];
       // Operations already under way come first. One that loads a session
       // leaves it here to be shut down on the next turn of this loop.
-      const busy = all.flatMap((entry) => ('handle' in entry ? [] : [entry.settled]));
+      const busy = all.flatMap((entry): Promise<unknown>[] =>
+        'handle' in entry ? (entry.evicting ? [entry.evicting] : []) : [entry.settled],
+      );
       if (busy.length > 0) {
         await Promise.all(busy);
         continue;
@@ -264,7 +436,7 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
         const saved = await saveNewSession(store, session);
         if (!saved.ok) return saved;
         // Only now, with the first snapshot stored, is there a room or a token.
-        return ok(register(session));
+        return ok(register(session, 'created'));
       } finally {
         release();
       }
@@ -285,7 +457,7 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
         try {
           const loaded = await sessions.load(sessionId);
           if (!loaded.ok) return loaded;
-          return ok(register(loaded.value));
+          return ok(register(loaded.value, 'loaded'));
         } finally {
           release();
         }
@@ -319,6 +491,74 @@ export function createSessionRegistry(options: SessionRegistryOptions): SessionR
       } finally {
         release();
       }
+    },
+
+    async evict(sessionId) {
+      for (;;) {
+        if (shuttingDown) return err(registryClosed());
+        const entry = entries.get(sessionId);
+        // Not in memory: there is nothing to release.
+        if (!entry) return ok(undefined);
+        if ('handle' in entry) {
+          if (!entry.evicting) {
+            // Cleared only after it has been set: an eviction that ends at once
+            // must not be left standing as one that is under way.
+            const eviction = evictLoaded(sessionId, entry).finally(() => {
+              if (entry.evicting === eviction) delete entry.evicting;
+            });
+            entry.evicting = eviction;
+          }
+          return entry.evicting;
+        }
+        await entry.settled;
+      }
+    },
+
+    async evictIdle() {
+      if (shuttingDown) return { evicted: [], failed: [] };
+      const now = clock.now();
+      const due = [...entries].flatMap(([sessionId, entry]) => {
+        if (!('handle' in entry) || entry.connections > 0 || entry.evicting) return [];
+        const wait = entry.handle.isFinished() ? finishedIdleMs : idleMs;
+        return now - entry.lastActiveAt >= wait ? [sessionId] : [];
+      });
+
+      const evicted: string[] = [];
+      const failed: { sessionId: string; error: SessionPersistenceError }[] = [];
+      // Together: one session's eviction never waits for another's.
+      await Promise.all(
+        due.map(async (sessionId) => {
+          const result = await this.evict(sessionId);
+          if (result.ok) evicted.push(sessionId);
+          else if (
+            result.error.code !== 'SESSION_IN_USE' &&
+            result.error.code !== 'REGISTRY_CLOSED'
+          ) {
+            failed.push({ sessionId, error: result.error });
+          }
+        }),
+      );
+      return { evicted, failed };
+    },
+
+    sessions() {
+      return [...entries].flatMap(([sessionId, entry]): SessionInfo[] => {
+        if (!('handle' in entry)) {
+          return entry.kind === 'unloading'
+            ? [{ sessionId, state: 'closing', connections: 0 }]
+            : [];
+        }
+        const state: SessionLifecycleState = entry.evicting
+          ? 'closing'
+          : entry.handle.isFinished()
+            ? 'finished'
+            : entry.connections > 0
+              ? 'active'
+              : 'idle';
+        return [
+          { sessionId, state, connections: entry.connections, lastActiveAt: entry.lastActiveAt },
+        ];
+      });
     },
 
     shutdown() {

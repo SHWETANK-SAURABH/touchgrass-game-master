@@ -216,6 +216,18 @@ checks, the same broadcasts.
 - **Broadcasts stay in their room.** A room writes only to its own connections, so nothing one
   session does reaches a connection of another.
 
+### Knowing whether a room is in use
+
+```ts
+createRoom({ session, onConnections: (count) => { … } });
+```
+
+`onConnections` is told how many connections the room knows of, joined or not, each time one
+arrives or goes away. A connection that is taken over by a resume counts as gone at that moment.
+It is not called when the room is closed. The room does nothing with the number, has no idea of
+"idle", and reads no clock: whoever listens decides what an empty room means. A listener that
+throws is ignored.
+
 ### Closing a room
 
 ```ts

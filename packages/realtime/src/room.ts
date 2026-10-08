@@ -137,6 +137,13 @@ export interface RoomOptions {
    * It must be unguessable, and different for every player and every game.
    */
   readonly playerToken?: (playerId: string) => string;
+  /**
+   * Told how many connections the room knows of, joined or not, each time that
+   * number changes because one arrived or went away. It is not called when the
+   * room is closed. The room does nothing with the answer and passes no time:
+   * whoever listens decides what an empty room means.
+   */
+  readonly onConnections?: (count: number) => void;
   readonly maxMessageBytes?: number;
 }
 
@@ -169,6 +176,22 @@ export function createRoom(options: RoomOptions): Room {
   /** Every connection the room knows of, whether or not it is anyone yet. */
   const attached = new Set<RoomConnection>();
   let closed = false;
+
+  const counted = (): void => {
+    try {
+      options.onConnections?.(attached.size);
+    } catch {
+      // A listener that fails must not stop the room handling the connection.
+    }
+  };
+  const know = (connection: RoomConnection): void => {
+    if (attached.has(connection)) return;
+    attached.add(connection);
+    counted();
+  };
+  const unknow = (connection: RoomConnection): void => {
+    if (attached.delete(connection)) counted();
+  };
 
   const write = (connection: RoomConnection, text: string): void => {
     try {
@@ -318,7 +341,7 @@ export function createRoom(options: RoomOptions): Room {
     const previous = connectionOf.get(playerId);
     if (previous) {
       forget(previous);
-      attached.delete(previous);
+      unknow(previous);
       // Told why, then closed. It is nobody from here on: anything it still
       // sends comes from a connection that has not joined.
       fail(previous, 'CONNECTION_REPLACED');
@@ -384,7 +407,7 @@ export function createRoom(options: RoomOptions): Room {
     receive(connection, raw, ctx) {
       // A closed room reads nothing and changes nothing.
       if (closed) return turnAway(connection);
-      attached.add(connection);
+      know(connection);
       const message = parseClientMessage(raw, maxMessageBytes);
       if (!message.ok) return fail(connection, message.error);
       // Before deciding who this connection is, drop any binding or token whose
@@ -408,13 +431,13 @@ export function createRoom(options: RoomOptions): Room {
 
     attach(connection) {
       if (closed) return false;
-      attached.add(connection);
+      know(connection);
       return true;
     },
 
     disconnect(connection) {
-      attached.delete(connection);
       forget(connection);
+      unknow(connection);
     },
 
     tick(ctx) {

@@ -1051,6 +1051,8 @@ describe('the registry stays inside its boundary', () => {
     for (const code of [registry, handle]) {
       const topLevel = code
         .split('\n')
+        // A named number is a setting, not state.
+        .filter((line) => !/^export const [A-Z_]+ = [\d_ *]+;$/.test(line))
         .filter((line) => /^(export )?(let|var|const)\s/.test(line) && !/=>|= async/.test(line));
       expect(topLevel).toEqual([]);
       expect(code).not.toMatch(/setTimeout|setInterval|setImmediate|retry|autosave|redis/i);

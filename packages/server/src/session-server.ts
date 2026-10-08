@@ -7,6 +7,7 @@ import {
 import type { ClosableSessionStore } from './persistent-server';
 import {
   type RegistryShutdownResult,
+  type SessionLifecycleEvent,
   type SessionRegistry,
   createSessionRegistry,
 } from './session-registry';
@@ -48,6 +49,12 @@ export interface SessionServerOptions {
   readonly createToken?: () => string;
   /** The key player tokens are worked out from. See the registry's `tokenKey`. */
   readonly tokenKey?: Uint8Array;
+  /** When an unused session may be evicted. See the registry's `idleMs`. */
+  readonly idleMs?: number;
+  /** The same, for a session whose game is over. */
+  readonly finishedIdleMs?: number;
+  /** Told what happens to sessions. See the registry's `onEvent`. */
+  readonly onEvent?: (event: SessionLifecycleEvent) => void;
 }
 
 export interface SessionServer {
@@ -55,7 +62,7 @@ export interface SessionServer {
   readonly port: number;
   /**
    * The registry behind the listener, for trusted server code: creating a
-   * session, saving one, unloading one, deleting one.
+   * session, saving one, evicting or unloading one, deleting one.
    */
   readonly registry: SessionRegistry;
   /** How many sockets are open, with a session or not. */
@@ -93,6 +100,10 @@ export async function startSessionServer(
     store: options.store,
     ...(options.createToken ? { createToken: options.createToken } : {}),
     ...(options.tokenKey ? { tokenKey: options.tokenKey } : {}),
+    ...(options.clock ? { clock: options.clock } : {}),
+    ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
+    ...(options.finishedIdleMs === undefined ? {} : { finishedIdleMs: options.finishedIdleMs }),
+    ...(options.onEvent ? { onEvent: options.onEvent } : {}),
   });
   let stopping: Promise<RegistryShutdownResult> | undefined;
 
