@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type Clock, type Result, err, ok } from '@touchgrass/shared';
 import {
   type RouteError,
@@ -73,6 +74,10 @@ export interface SessionServerOptions {
    * part is optional, and with none of them the server behaves exactly the same.
    */
   readonly observability?: ObservabilityOptions;
+  /** Answers plain HTTP requests on the same port. See the routed listener's `http`. */
+  readonly http?: (request: IncomingMessage, response: ServerResponse) => void;
+  /** How often to ping attached sockets. See the routed listener's `heartbeatMs`. */
+  readonly heartbeatMs?: number;
 }
 
 export interface SessionServer {
@@ -209,6 +214,8 @@ export async function startSessionServer(
       port: options.port,
       ...(options.clock ? { clock: options.clock } : {}),
       ...(options.host ? { host: options.host } : {}),
+      ...(options.http ? { http: options.http } : {}),
+      ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
     });
   } catch {
     return err({ code: 'SERVER_NOT_STARTED', message: 'The server could not start listening.' });

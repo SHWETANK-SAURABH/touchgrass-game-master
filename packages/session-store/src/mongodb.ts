@@ -61,6 +61,11 @@ export interface MongoSessionStoreOptions {
   readonly databaseName: string;
   /** Defaults to "sessions". */
   readonly collectionName?: string;
+  /**
+   * How long an operation may wait to find a server before it fails. Left out,
+   * the driver's own default applies (30 seconds).
+   */
+  readonly serverSelectionTimeoutMs?: number;
 }
 
 export const DEFAULT_SESSION_COLLECTION = 'sessions';
@@ -191,7 +196,13 @@ export function createMongoSessionStore(options: MongoSessionStoreOptions): Mong
   const collectionName = options.collectionName ?? DEFAULT_SESSION_COLLECTION;
 
   return new MongoSessionStore(() => {
-    const client = new MongoClient(uri, { retryWrites: false, retryReads: false });
+    const client = new MongoClient(uri, {
+      retryWrites: false,
+      retryReads: false,
+      ...(options.serverSelectionTimeoutMs === undefined
+        ? {}
+        : { serverSelectionTimeoutMS: options.serverSelectionTimeoutMs }),
+    });
     const collection = client.db(databaseName).collection<SessionDocument>(collectionName);
     return {
       async replace(document) {

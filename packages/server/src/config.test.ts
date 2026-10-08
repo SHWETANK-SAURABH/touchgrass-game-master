@@ -88,7 +88,7 @@ describe('where configuration is read', () => {
     const readers = read(directory)
       .filter(([, source]) => /process\.env/.test(source))
       .map(([name]) => name);
-    expect(readers).toEqual(['dev-sessions.ts', 'dev.ts']);
+    expect(readers).toEqual(['dev-sessions.ts', 'dev.ts', 'main.ts']);
   });
 
   it('is never read by the store, the lifecycle or the session', () => {

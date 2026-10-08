@@ -565,6 +565,145 @@ describe('being told what happens at the listener', () => {
   });
 });
 
+describe('plain HTTP on the same port', () => {
+  it('answers 426 when nobody handles it, as a WebSocket-only server does', async () => {
+    const { server } = await start();
+    const response = await fetch(`http://127.0.0.1:${String(server.port)}/sessions/a`);
+    expect(response.status).toBe(426);
+  });
+
+  it('hands a request that is not an upgrade to the handler, and still takes sockets', async () => {
+    const session = newSession('a');
+    const room = createRoom({ session });
+    const seen: string[] = [];
+    const server = await createRoutedRealtimeServer({
+      port: 0,
+      clock,
+      route: () => room,
+      http: (request, response) => {
+        seen.push(`${String(request.method)} ${String(request.url)}`);
+        response.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"ok"}');
+      },
+    });
+    servers.push(server);
+
+    const response = await fetch(`http://127.0.0.1:${String(server.port)}/healthz`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'ok' });
+    expect(seen).toEqual(['GET /healthz']);
+
+    const client = await Client.open(server.port, '/sessions/a');
+    expect((await client.join('Ada')).sessionId).toBe('a');
+    // An upgrade never reaches the handler.
+    expect(seen).toEqual(['GET /healthz']);
+  });
+
+  it('answers 500 with no detail when the handler throws, and tells whoever monitors errors', async () => {
+    const session = newSession('a');
+    const errors: unknown[] = [];
+    const server = await createRoutedRealtimeServer({
+      port: 0,
+      clock,
+      route: () => createRoom({ session }),
+      onError: (error) => errors.push(error),
+      http: () => {
+        throw new Error('LEAK_MARKER the handler broke');
+      },
+    });
+    servers.push(server);
+    const response = await fetch(`http://127.0.0.1:${String(server.port)}/anything`);
+    expect(response.status).toBe(500);
+    expect(await response.text()).toBe('{"error":"INTERNAL"}');
+    expect(errors).toHaveLength(1);
+  });
+
+  it('frees the port when it is closed, even with an HTTP connection kept open', async () => {
+    const session = newSession('a');
+    const server = await createRoutedRealtimeServer({
+      port: 0,
+      clock,
+      route: () => createRoom({ session }),
+      http: (_request, response) => {
+        response.writeHead(200).end('ok');
+      },
+    });
+    // A keep-alive request leaves its connection open.
+    await fetch(`http://127.0.0.1:${String(server.port)}/healthz`);
+    await server.close();
+    await expect(fetch(`http://127.0.0.1:${String(server.port)}/healthz`)).rejects.toBeDefined();
+  });
+});
+
+describe('the heartbeat', () => {
+  async function beating(heartbeatMs: number | undefined) {
+    const session = newSession('a');
+    const room = createRoom({ session });
+    const server = await createRoutedRealtimeServer({
+      port: 0,
+      clock,
+      route: () => room,
+      ...(heartbeatMs === undefined ? {} : { heartbeatMs }),
+    });
+    servers.push(server);
+    return { server, room };
+  }
+
+  /** A socket that connects and joins, and answers pings only if told to. */
+  function open(port: number, autoPong: boolean): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${String(port)}/sessions/a`, { autoPong });
+      socket.on('error', () => undefined);
+      socket.once('open', () => {
+        socket.send(JSON.stringify({ type: 'join', joinCode: CODE, displayName: 'Ada' }));
+        resolve(socket);
+      });
+      socket.once('error', reject);
+    });
+  }
+
+  it('closes a socket that stops answering, so it does not stay in its room for ever', async () => {
+    const { server, room } = await beating(25);
+    const silent = await open(server.port, false);
+    await until(() => room.connectionCount() === 1);
+    const closed = new Promise<void>((resolve) => {
+      silent.once('close', () => {
+        resolve();
+      });
+    });
+    await closed;
+    await until(() => room.connectionCount() === 0);
+    await until(() => server.socketCount() === 0);
+  });
+
+  it('leaves a socket that answers alone', async () => {
+    const { server, room } = await beating(20);
+    const lively = await open(server.port, true);
+    let pings = 0;
+    lively.on('ping', () => {
+      pings += 1;
+    });
+    await until(() => room.connectionCount() === 1);
+    // Several beats go by.
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+    expect(pings).toBeGreaterThanOrEqual(3);
+    expect(lively.readyState).toBe(WebSocket.OPEN);
+    expect(room.connectionCount()).toBe(1);
+  });
+
+  it('sends no ping unless it is asked to', async () => {
+    const { server, room } = await beating(undefined);
+    const socket = await open(server.port, false);
+    let pings = 0;
+    socket.on('ping', () => {
+      pings += 1;
+    });
+    await until(() => room.connectionCount() === 1);
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(pings).toBe(0);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+  });
+});
+
 describe('the routed adapter stays an adapter', () => {
   const directory = dirname(fileURLToPath(import.meta.url));
   const code = readFileSync(joinPath(directory, 'routed-server.ts'), 'utf-8').replace(
@@ -576,7 +715,10 @@ describe('the routed adapter stays an adapter', () => {
     expect(code).not.toMatch(/new Map|new Set|new WeakMap/);
     expect(code).not.toMatch(/getState|applyCommand|submitAction|advanceTime|createRoom/);
     expect(code).not.toMatch(/parseClientMessage|joinCode|hostToken/);
-    expect(code).not.toMatch(/setTimeout|setInterval|retry/i);
+    expect(code).not.toMatch(/setTimeout|retry/i);
+    // One timer per attached socket, for the heartbeat, cleared when the socket closes.
+    expect(code.match(/setInterval/g)).toHaveLength(1);
+    expect(code.match(/clearInterval/g)).toHaveLength(1);
   });
 
   it('knows nothing of persistence or of who supplies the rooms', () => {

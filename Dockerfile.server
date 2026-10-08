@@ -1,0 +1,66 @@
+# Production image for the TouchGrass game server.
+#
+#   docker build -f Dockerfile.server -t touchgrass-server .
+#
+# One process: the WebSocket listener, the session registry, the Game Master
+# pipeline and the health endpoints. It needs a MongoDB to keep sessions in.
+#
+# The model runtime is NOT part of this image, and no model is downloaded when
+# it starts. With the Game Master on, the server calls an Ollama (or other)
+# endpoint at MODEL_BASE_URL, which runs somewhere else. With it off, which is
+# the default, no model is needed at all.
+#
+# The web app has its own image: see ./Dockerfile.
+
+# --- deps: everything, to build with --------------------------------------
+FROM node:24-alpine AS deps
+WORKDIR /repo
+COPY package.json package-lock.json ./
+COPY apps/web/package.json ./apps/web/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/game-definitions/package.json ./packages/game-definitions/
+COPY packages/game-engine/package.json ./packages/game-engine/
+COPY packages/game-session/package.json ./packages/game-session/
+COPY packages/session-store/package.json ./packages/session-store/
+COPY packages/session-persistence/package.json ./packages/session-persistence/
+COPY packages/realtime/package.json ./packages/realtime/
+COPY packages/server/package.json ./packages/server/
+COPY packages/safety/package.json ./packages/safety/
+COPY packages/ai/package.json ./packages/ai/
+RUN npm ci
+
+# --- build: bundle the server and the workspace packages it uses ----------
+FROM deps AS build
+COPY . .
+RUN npm run build:server
+
+# --- prod-deps: what the bundle imports at run time, and nothing else -----
+# The same manifests and the same lockfile, without development dependencies
+# and without the web app's. The bundle already contains every workspace
+# package, so only third-party packages matter here.
+FROM node:24-alpine AS prod-deps
+WORKDIR /repo
+COPY --from=deps /repo/package.json /repo/package-lock.json ./
+COPY --from=deps /repo/apps ./apps
+COPY --from=deps /repo/packages ./packages
+RUN npm ci --omit=dev --workspace @touchgrass/server --include-workspace-root=false \
+ && npm cache clean --force
+
+# --- runtime ---------------------------------------------------------------
+FROM node:24-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+    SERVER_HOST=0.0.0.0 \
+    SERVER_PORT=3001 \
+    MASTRA_TELEMETRY_DISABLED=1
+COPY --from=prod-deps --chown=node:node /repo/node_modules ./node_modules
+COPY --from=build --chown=node:node /repo/dist/server ./dist/server
+# The image ships no .env file and no credential. Everything is given at run time.
+USER node
+EXPOSE 3001
+# Liveness only: is the process answering. Readiness is /readyz, which also
+# asks the database, and is for whatever routes traffic to the container.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.SERVER_PORT||3001)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# Exec form, so the process receives SIGTERM itself and shuts down gracefully.
+CMD ["node", "dist/server/main.mjs"]

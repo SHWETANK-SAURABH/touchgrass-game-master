@@ -234,6 +234,17 @@ package released. A closed room refuses.
 after it, whether or not anyone is connected. It is what the connections are sent. A listener
 cannot alter it, and one that throws is ignored.
 
+### Plain HTTP and a heartbeat on the same listener
+
+`createRoutedRealtimeServer({ …, http, heartbeatMs })`.
+
+- `http(request, response)` answers requests on the same port that are not WebSocket upgrades, such
+  as a health check. Left out, such a request is answered 426. A handler that throws is answered
+  500 with no detail.
+- `heartbeatMs` pings every socket that has a room. One that has not answered the previous ping by
+  the next is closed, so a peer that vanished without closing does not stay a connection of its
+  room. Left out or 0, no ping is sent.
+
 ### Being told what happens at the listener
 
 `createRoutedRealtimeServer({ …, onSocket, onError })`. `onSocket` is told when a socket opens,

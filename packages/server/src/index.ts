@@ -100,3 +100,22 @@ export {
   type SocketEvent,
   createObserver,
 } from './observability';
+
+export {
+  DEFAULT_MONGODB_TIMEOUT_MS,
+  DEFAULT_SERVER_HOST,
+  DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  DEFAULT_WS_HEARTBEAT_MS,
+  type ProductionConfig,
+  type ProductionConfigSummary,
+  parseProductionConfig,
+  summarizeProductionConfig,
+} from './production-config';
+
+export {
+  type ProductionServer,
+  type ProductionServerOptions,
+  type ProductionShutdownResult,
+  type Readiness,
+  startProductionServer,
+} from './production-server';

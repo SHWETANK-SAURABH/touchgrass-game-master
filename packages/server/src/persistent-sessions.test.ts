@@ -320,11 +320,14 @@ describe('the application layer keeps no module-level state and no storage of it
       'dev.ts',
       'game-master-turns.ts',
       'index.ts',
+      'main.ts',
       'metrics.ts',
       'observability.ts',
       'persistent-server.ts',
       'persistent-sessions.ts',
       'player-tokens.ts',
+      'production-config.ts',
+      'production-server.ts',
       'reporting.ts',
       'sentry.ts',
       'session-handle.ts',
@@ -341,8 +344,10 @@ describe('the application layer keeps no module-level state and no storage of it
       );
       // One timer exists: the multi-session development server's sweep, which
       // only asks the registry to look. Nothing in the library has a timer.
+      // One timer each in the two places that run a server on a schedule: the
+      // eviction sweep. It only asks the registry to look.
       expect(code.match(/setInterval/g) ?? [], name).toHaveLength(
-        name === 'dev-sessions.ts' ? 1 : 0,
+        name === 'dev-sessions.ts' || name === 'production-server.ts' ? 1 : 0,
       );
       // One table exists: the registry's own, made inside each registry.
       const tables = code.split('\n').filter((line) => line.includes('new Map'));
@@ -350,7 +355,8 @@ describe('the application layer keeps no module-level state and no storage of it
         name === 'session-registry.ts' ? ['  const entries = new Map<string, Entry>();'] : [],
       );
       expect(code, name).not.toMatch(/retry|redis|jsonwebtoken|\bjwt\b|autosave/i);
-      if (name === 'dev.ts' || name === 'dev-sessions.ts') continue;
+      // The entry points are programs, and hold their own program state.
+      if (name === 'dev.ts' || name === 'dev-sessions.ts' || name === 'main.ts') continue;
       // Outside the development entry point there is no module-level state at all.
       const topLevel = code
         .split('\n')
@@ -373,7 +379,7 @@ describe('the application layer keeps no module-level state and no storage of it
     }
     // Only the development entry point makes a MongoDB store, from configuration.
     const makers = sources.filter(([, source]) => /createMongoSessionStore/.test(source));
-    expect(makers.map(([name]) => name)).toEqual(['dev-sessions.ts', 'dev.ts']);
+    expect(makers.map(([name]) => name)).toEqual(['dev-sessions.ts', 'dev.ts', 'main.ts']);
   });
 
   it('is the only package that puts the store, the lifecycle and the transport together', () => {

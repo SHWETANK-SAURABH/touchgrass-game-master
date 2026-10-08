@@ -538,6 +538,26 @@ round begins (engine)  →  Game Master proposes  →  schema  →  engine: lega
 settings, prints one line per turn, and has a `gm <id>` command. The full description, the
 configuration and the failure table are in [AI.md](../../AI.md#the-game-master-in-a-live-game).
 
+## The production entry point
+
+`main.ts` is the deployed server: `npm run build:server` then `npm run start:server`, or the image
+built from `Dockerfile.server`. It is `startProductionServer`, which is `startSessionServer` with
+what only a deployment needs:
+
+- **Configuration** from `parseProductionConfig(env)`: one call, every problem reported by variable
+  name, no value ever repeated. Invalid configuration exits with status 1.
+- **`GET /healthz`** (alive) and **`GET /readyz`** (the store answers, and it is not shutting down),
+  on the same port as the WebSocket listener. Readiness reads one document by id through the
+  persistence lifecycle, with a time limit, and reuses the answer for a few seconds.
+- **Admin endpoints**, only when `ADMIN_TOKEN` is set: `POST /admin/sessions`,
+  `POST /admin/sessions/<id>/save`, `GET /admin/metrics`. This is how a session is created without
+  a terminal.
+- **The eviction sweep** on a timer, and a **heartbeat** on attached sockets.
+- **`shutdown()`**, bounded by `SHUTDOWN_TIMEOUT_MS`, run on `SIGTERM` and `SIGINT`.
+
+It has no terminal commands and prints no token. Everything about running it is in
+[DEPLOYMENT.md](../../DEPLOYMENT.md).
+
 ## Observability
 
 ```ts

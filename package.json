@@ -2,7 +2,7 @@
   "name": "touchgrass",
   "version": "0.1.0",
   "private": true,
-  "description": "TouchGrass — an open-weight AI Game Master for real-world outdoor games.",
+  "description": "TouchGrass \u2014 an open-weight AI Game Master for real-world outdoor games.",
   "license": "MIT",
   "engines": {
     "node": ">=22.0.0"
@@ -16,6 +16,9 @@
     "dev": "npm run dev --workspace @touchgrass/web",
     "build": "npm run build --workspace @touchgrass/web",
     "start": "npm run start --workspace @touchgrass/web",
+    "build:server": "node scripts/build-server.mjs",
+    "start:server": "node dist/server/main.mjs",
+    "smoke:server": "node scripts/smoke-server.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -39,6 +42,7 @@
     "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",

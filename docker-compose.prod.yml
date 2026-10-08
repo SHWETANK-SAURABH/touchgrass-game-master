@@ -1,0 +1,94 @@
+# A production-like stack on one machine: the game server and its database.
+#
+#   ADMIN_TOKEN=<32+ characters> docker compose -f docker-compose.prod.yml up --build
+#   SMOKE_BASE_URL=http://127.0.0.1:3001 ADMIN_TOKEN=<the same> npm run smoke:server
+#   docker compose -f docker-compose.prod.yml down
+#
+# With the Game Master, the model runtime is a separate service. Either point
+# MODEL_BASE_URL at one that the container can reach (the default is an Ollama
+# on the host, which must listen on more than 127.0.0.1), or run the one
+# below, on the same network, and pull the model into it once:
+#
+#   docker compose -f docker-compose.prod.yml --profile ai up -d ollama
+#   docker compose -f docker-compose.prod.yml --profile ai exec ollama ollama pull gemma3:4b
+#   ADMIN_TOKEN=… GAME_MASTER_ENABLED=true MODEL_BASE_URL=http://ollama:11434 \
+#     docker compose -f docker-compose.prod.yml --profile ai up --build -d
+#
+# It is for trying the deployment shape locally. It is not a production
+# deployment: there is no TLS, the database has no authentication and is one
+# node, and nothing is backed up. See DEPLOYMENT.md.
+
+name: touchgrass-prod
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: touchgrass-server:local
+    # Forwards signals and reaps children, so `docker compose stop` is a clean SIGTERM.
+    init: true
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - '${SERVER_PORT:-3001}:3001'
+    environment:
+      NODE_ENV: production
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 3001
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DATABASE: '${MONGODB_DATABASE:-touchgrass}'
+      # Required here: without it nobody could create a session. Never commit one.
+      ADMIN_TOKEN: '${ADMIN_TOKEN:?Set ADMIN_TOKEN to at least 32 characters}'
+      # Optional. With it, player tokens survive a restart.
+      SESSION_TOKEN_KEY: '${SESSION_TOKEN_KEY:-}'
+      SESSION_IDLE_MS: '${SESSION_IDLE_MS:-}'
+      SESSION_FINISHED_IDLE_MS: '${SESSION_FINISHED_IDLE_MS:-}'
+      SESSION_SWEEP_MS: '${SESSION_SWEEP_MS:-}'
+      # Off unless asked for. The server runs complete games without a model.
+      GAME_MASTER_ENABLED: '${GAME_MASTER_ENABLED:-false}'
+      GAME_MASTER_TOOLS: '${GAME_MASTER_TOOLS:-}'
+      GAME_MASTER_TIMEOUT_MS: '${GAME_MASTER_TIMEOUT_MS:-}'
+      # The model runtime is somewhere else. By default: an Ollama on the host.
+      MODEL_PROVIDER: '${MODEL_PROVIDER:-ollama}'
+      MODEL_NAME: '${MODEL_NAME:-gemma3:4b}'
+      MODEL_BASE_URL: '${MODEL_BASE_URL:-http://host.docker.internal:11434}'
+      SENTRY_ENABLED: '${SENTRY_ENABLED:-false}'
+      SENTRY_DSN: '${SENTRY_DSN:-}'
+      SENTRY_ENVIRONMENT: '${SENTRY_ENVIRONMENT:-local}'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    # Longer than the server's own shutdown limit (25 seconds by default).
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:8
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # Optional: a model runtime on the same network. It is never started unless
+  # the `ai` profile is asked for, the server does not wait for it, and no model
+  # is downloaded until you pull one.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ['ai']
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: '30m'
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+    name: touchgrass-prod-mongo
+  ollama-models:
+    name: touchgrass-prod-ollama-models

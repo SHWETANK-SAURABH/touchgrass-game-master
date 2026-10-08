@@ -122,6 +122,10 @@ Already running Ollama on the host? Skip `ai:up` / `ai:pull` and just
 | `npm run ai:live`       | Manual test: one real Game Master call to the local model         |
 | `npm run realtime:dev`  | Development only: one game over WebSocket; prints its codes       |
 | `npm run server:dev`    | Development only: the same, kept in MongoDB (needs `MONGODB_URI`) |
+| `npm run sessions:dev`  | Development only: many games on one listener, with a terminal     |
+| `npm run build:server`  | Bundle the production game server into `dist/server`              |
+| `npm run start:server`  | Run the production game server (needs `MONGODB_URI`)              |
+| `npm run smoke:server`  | Smoke-test a running game server (needs `ADMIN_TOKEN`)            |
 
 GPU on the host? `docker compose --profile gpu up -d ollama-gpu`.
 
@@ -181,6 +185,7 @@ it.
 | [AI.md](./AI.md)                                        | What "agent" means here, structured output, why the LLM is not the engine    |
 | [GAME_ENGINE.md](./packages/game-engine/GAME_ENGINE.md) | Actions, events, state, lifecycle, validation, determinism                   |
 | [SAFETY.md](./SAFETY.md)                                | The hazard taxonomy, the validator design, what the AI is never trusted with |
+| [DEPLOYMENT.md](./DEPLOYMENT.md)                        | Running the game server: services, configuration, health, shutdown, limits   |
 
 Each package also has its own README describing its boundary.
 

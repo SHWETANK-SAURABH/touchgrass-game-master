@@ -989,7 +989,32 @@ is unavailable.
 
 ## 10. Production architecture
 
-> **Planned — later phase** for deployment. The build output and container already target it.
+> **The game server can be deployed as one process.** How, and with what limits, is in
+> [DEPLOYMENT.md](./DEPLOYMENT.md). The diagram below is the longer-term plan: Redis, a hosted
+> platform and a GPU host are **not built**, and nothing has been deployed to a cloud provider.
+
+**What exists.** `packages/server/src/main.ts` is the production entry point of the game server,
+built by `npm run build:server` and packaged by `Dockerfile.server`.
+
+- **One process, one port.** WebSocket at `/sessions/<sessionId>`, `GET /healthz` (alive),
+  `GET /readyz` (the database answers and it is not shutting down), and admin endpoints behind a
+  bearer token for creating a session, saving one and reading the counters.
+- **One validated configuration.** `parseProductionConfig` reads the environment once, reports
+  every problem by variable name and never by value, and the process exits if it is not valid.
+  Defaults are cautious: loopback address, no admin endpoints, no Game Master, no error reporting.
+- **Readiness depends on MongoDB only.** The model runtime and Sentry are optional, and the server
+  serves complete games without them.
+- **A heartbeat.** Attached sockets are pinged; one that stops answering is closed, so a vanished
+  peer does not hold a session in memory.
+- **A bounded graceful shutdown** on `SIGTERM` and `SIGINT`: refuse new work, close every room,
+  save what is unsaved, close the database client, stop listening, flush error reports, and exit 0
+  or 1 by whether everything was saved. It gives up after a fixed time.
+- **The model is elsewhere.** The image holds no model and downloads none; the server calls
+  `MODEL_BASE_URL` only when the Game Master is on.
+- **Still single-process.** No Redis, no shared session state, no horizontal scaling. Running two
+  instances against one database is not safe.
+
+The longer-term shape, **not built**:
 
 ```mermaid
 flowchart TD

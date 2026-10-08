@@ -1,3 +1,4 @@
+import { type IncomingMessage, type ServerResponse, createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { type Clock, systemClock } from '@touchgrass/shared';
 import { contextAt } from '@touchgrass/game-engine';
@@ -92,6 +93,19 @@ export interface RoutedRealtimeServerOptions {
    * started, or when `route` throws. A listener that throws is ignored.
    */
   readonly onError?: (error: unknown) => void;
+  /**
+   * Answers requests on the same port that are not WebSocket upgrades: a health
+   * check, for example. Left out, such a request is answered 426. A handler
+   * that throws is answered 500 with no detail.
+   */
+  readonly http?: (request: IncomingMessage, response: ServerResponse) => void;
+  /**
+   * How often to ping each socket that has a room. One that has not answered
+   * the previous ping by the next is closed, so a peer that vanished without
+   * closing does not stay a connection of its room for ever. Left out or 0,
+   * no ping is sent.
+   */
+  readonly heartbeatMs?: number;
 }
 
 export interface RoutedRealtimeServer {
@@ -125,10 +139,27 @@ export function createRoutedRealtimeServer(
     }
   };
 
+  const heartbeatMs = Math.max(0, options.heartbeatMs ?? 0);
+
+  // One port for both: a WebSocket upgrade goes to the rooms, and anything else
+  // is an ordinary request.
+  const httpServer = createServer((request, response) => {
+    if (!options.http) {
+      response.writeHead(426, { 'content-type': 'text/plain' }).end('Upgrade Required');
+      return;
+    }
+    try {
+      options.http(request, response);
+    } catch (error) {
+      failed(error);
+      if (!response.headersSent) response.writeHead(500, { 'content-type': 'application/json' });
+      response.end('{"error":"INTERNAL"}');
+    }
+  });
+
   return new Promise((resolve, reject) => {
     const server = new WebSocketServer({
-      port: options.port,
-      ...(options.host ? { host: options.host } : {}),
+      server: httpServer,
       // ws closes a socket that sends a larger frame, with status 1009.
       maxPayload: maxMessageBytes,
     });
@@ -195,6 +226,22 @@ export function createRoutedRealtimeServer(
           room = found;
           tell('attached');
           socket.resume();
+          if (heartbeatMs > 0) {
+            // Started only now: a socket still waiting for its room reads nothing,
+            // so it could not answer a ping.
+            let answered = true;
+            socket.on('pong', () => {
+              answered = true;
+            });
+            const beat = setInterval(() => {
+              if (!answered) return socket.terminate();
+              answered = false;
+              socket.ping();
+            }, heartbeatMs);
+            socket.once('close', () => {
+              clearInterval(beat);
+            });
+          }
         });
     });
 
@@ -209,8 +256,18 @@ export function createRoutedRealtimeServer(
       resolve({
         port,
         socketCount: () => server.clients.size,
-        close: () => stopListening(server),
+        close: async () => {
+          await stopListening(server);
+          // The WebSocket server does not own the HTTP server it was attached to.
+          httpServer.closeAllConnections();
+          await new Promise<void>((closed) => {
+            httpServer.close(() => {
+              closed();
+            });
+          });
+        },
       });
     });
+    httpServer.listen(options.port, ...(options.host ? [options.host] : []));
   });
 }

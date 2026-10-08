@@ -459,7 +459,13 @@ describe('where Sentry is', () => {
       expect(source, name).not.toMatch(/from '\.\/sentry'/);
     }
     const loaders = sources.filter(([, source]) => /import\('\.\/sentry'\)/.test(source));
-    expect(loaders.map(([name]) => name)).toEqual(['dev-sessions.ts']);
+    expect(loaders.map(([name]) => name)).toEqual(['dev-sessions.ts', 'main.ts']);
+    for (const [name, source] of loaders) {
+      expect(source, name).toMatch(
+        /reporting(\.value)?\.enabled\s*\?\s*\(await import\('\.\/sentry'\)\)/,
+      );
+      expect(source, name).toContain(': noopReporter;');
+    }
     const dev = loaders[0]?.[1] ?? '';
     expect(dev).toMatch(/reporting\.value\.enabled\s*\?\s*\(await import\('\.\/sentry'\)\)/);
     expect(dev).toContain(': noopReporter;');
