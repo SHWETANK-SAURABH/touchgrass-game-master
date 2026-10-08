@@ -128,6 +128,10 @@ must be kept where only trusted code can write them.
 realtime layer holds. None of it is in `GameState`, so none of it can be saved here. After a restore
 every player is still in the game, but no token issued before it works: a new room starts with none.
 
+**Where a snapshot goes.** `@touchgrass/session-store` defines the `SessionStore` interface for
+saving and loading snapshots. This package does not depend on it, takes no store anywhere, and never
+saves itself.
+
 **The history is not bounded.** It grows by at least one entry per accepted input for as long as a
 game runs, and a snapshot is always the whole of it. No retention or compaction rule exists, and none
 was added, because dropping entries would change what the state says happened. For a 3-round game

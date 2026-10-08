@@ -256,7 +256,8 @@ order give the same roles on any host.
 | Safety validator                                  | Phase 4, in `packages/safety`; the engine does not depend on it  |
 | Multiplayer command boundary                      | Phase 5A: `submitPlayerAction`, actor supplied by the caller     |
 | In-memory authoritative session holder            | Phase 5B: `@touchgrass/game-session`, one object per game        |
-| Session snapshot and validated restore            | Phase 5E: plain data out, validated in; nothing stores it yet    |
+| Session snapshot and validated restore            | Phase 5E: plain data out, validated in                           |
+| Session store interface, in-memory reference      | Phase 5F: `@touchgrass/session-store`; not durable, never called |
 | WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
 | Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Session registry, authentication, persistence     | Later                                                            |
@@ -413,7 +414,39 @@ restoreGameSession(snapshot)    →  Result<GameSession, EngineError>   validate
 - **The history is unbounded** and a snapshot always contains all of it. No retention rule exists
   and none was invented here.
 
-Nothing stores a snapshot yet. There is no database, file, timer or background save.
+**The store boundary (Phase 5F).** `@touchgrass/session-store` defines where a snapshot goes.
+
+```
+GameSession → snapshot() → SessionStore.save(snapshot)
+SessionStore.load(sessionId) → restoreGameSession(snapshot) → GameSession
+```
+
+```ts
+interface SessionStore {
+  save(snapshot: GameSessionSnapshot): Promise<Result<void, SessionStoreError>>;
+  load(sessionId: string): Promise<Result<GameSessionSnapshot | null, SessionStoreError>>;
+  delete(sessionId: string): Promise<Result<void, SessionStoreError>>;
+}
+```
+
+- **It is an asynchronous boundary that names no database.** Failures are one of two plain codes,
+  `INVALID_SESSION_ID` and `STORAGE_ERROR`. No driver type or driver error crosses it.
+- **A store keeps snapshots, never live sessions.** `GameSession` remains the source of truth for a
+  running game. A store applies no game rule and does not judge whether a snapshot is a valid game;
+  `restoreGameSession` does that when a snapshot becomes a session again. The only thing a store
+  checks is its key: a session id is a non-empty string, the same rule the engine has.
+- **Copies, not references.** A store keeps its own copy of what it is given and returns a separate
+  copy on every load.
+- **Nothing saves automatically.** The session does not know stores exist and neither does the
+  realtime layer. No action, command, tick, join, leave, resume or disconnect causes a save. Whatever
+  application code eventually coordinates the two decides when, and that code does not exist yet.
+- **Bearer tokens are not in a snapshot,** so a store never holds them and they do not survive a
+  restore.
+
+The one implementation is `InMemorySessionStore`. It is for tests, local development, and as the
+reference for how a store behaves. It is not persistence: it holds snapshots in the memory of one
+process and loses them when that process stops. A MongoDB store is deliberately deferred. There is no
+database, file, timer or background save anywhere in the project.
 
 ### The WebSocket transport (Phases 5C and 5D)
 
@@ -599,7 +632,9 @@ Decisions already fixed by the engine design:
 
 ## 8. Data architecture
 
-> **Planned — later phase** for MongoDB and Redis. Today every piece of state is in-process.
+> **Planned — later phase** for MongoDB and Redis. Today every piece of state is in-process. The
+> interface a MongoDB store will implement exists (`SessionStore`, §7); only an in-memory reference
+> implements it.
 
 ```mermaid
 flowchart LR
@@ -793,6 +828,7 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
 | 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
 | 5E      | Session snapshot and validated restore: the boundary persistence will use                                   | **Complete** |
+| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                             | **Complete** |
 | Later   | Session registry, authentication and TLS, Redis, Game Master during a game, persistence, deployment         | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a

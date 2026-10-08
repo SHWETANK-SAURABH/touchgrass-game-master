@@ -39,7 +39,9 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 > send intents, and receive the authoritative state after each accepted change.
 >
 > Phase 5E lets a session describe itself as a snapshot and be rebuilt from one after validation,
-> which is the boundary a future persistence layer will use. Nothing stores a snapshot yet.
+> which is the boundary a future persistence layer will use. Phase 5F defines that layer's interface
+> (`SessionStore`) with an in-memory reference implementation. It is not durable, nothing saves
+> automatically, and no database is connected.
 >
 > Phase 5D adds lifecycle and control to that transport. A player who drops can resume on a new
 > connection with a token the server gave them at join; a player can leave before the game starts;
@@ -130,6 +132,7 @@ packages/
   game-definitions/       GameDefinition schema + the five games, as data
   game-engine/            Deterministic engine: actions, events, time, scoring, winners
   game-session/           In-memory holder of one game's authoritative state
+  session-store/          Persistence interface for session snapshots; in-memory reference only
   realtime/               WebSocket transport around one game session
   safety/                 Hazard taxonomy, policy, and the deterministic safety validator
   ai/                     ModelProvider + adapters, and the Game Master (Mastra agent)
@@ -143,6 +146,7 @@ Imports between workspaces, as they are in the code today (no cycles):
 | `game-definitions` | nothing                                               |
 | `game-engine`      | `game-definitions`, `shared`                          |
 | `game-session`     | `game-engine`, `shared`                               |
+| `session-store`    | `game-session` (types), `shared`                      |
 | `realtime`         | `game-engine`, `game-session`, `shared`               |
 | `safety`           | `game-definitions`, `game-engine`, `shared`           |
 | `ai`               | `game-definitions`, `game-engine`, `safety`, `shared` |
