@@ -256,6 +256,7 @@ order give the same roles on any host.
 | Safety validator                                  | Phase 4, in `packages/safety`; the engine does not depend on it  |
 | Multiplayer command boundary                      | Phase 5A: `submitPlayerAction`, actor supplied by the caller     |
 | In-memory authoritative session holder            | Phase 5B: `@touchgrass/game-session`, one object per game        |
+| Session snapshot and validated restore            | Phase 5E: plain data out, validated in; nothing stores it yet    |
 | WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
 | Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Session registry, authentication, persistence     | Later                                                            |
@@ -364,8 +365,9 @@ host command (trusted caller)   →     applyCommand    →   reduce
                                       getState        ←   the one authoritative GameState
 ```
 
-- **It owns exactly one state and never takes one from a caller.** The initial state is built by the
-  engine from a `CREATE_SESSION` command. No method has a state parameter.
+- **It owns exactly one state.** The state is built by the engine from a `CREATE_SESSION` command,
+  or rebuilt from a snapshot that passes validation (below). No method of a session has a state
+  parameter.
 - **It replaces the state only after the engine accepts.** A refusal leaves the stored state the
   very same object it was.
 - **It is synchronous.** Each operation reads the state, calls one engine function and stores the
@@ -383,8 +385,35 @@ host command (trusted caller)   →     applyCommand    →   reduce
 - **It returns what a broadcaster would send** (the new state and the history entries added), and
   sends nothing itself.
 
-It is in memory only. A process restart loses every game; there is no persistence, no restore from a
-saved state, no duplicate-message detection, and no connection to the Game Master.
+It is in memory only: there is no persistence, no duplicate-message detection, and no connection to
+the Game Master. A process restart loses every game unless something has stored a snapshot.
+
+**The snapshot boundary (Phase 5E).** A session can describe itself and be rebuilt, so that a future
+persistence layer can save and load a game without knowing anything about games.
+
+```
+session.snapshot()              →  { version, sessionId, state }      plain, frozen data
+restoreGameSession(snapshot)    →  Result<GameSession, EngineError>   validated first
+```
+
+- **A snapshot is a labelled `GameState`,** not a second representation. The session's one state is
+  the only thing it has to save.
+- **The authoritative history is `state.history`.** It is the engine's own append-only record,
+  numbered without gaps. No other log exists in the session, the realtime layer or anywhere else,
+  and the snapshot does not copy it out.
+- **Persistence saves and loads; the session decides.** Restoring treats its input as untrusted: the
+  engine's state schema, a matching session id, a registered game with that game's settings, a
+  history that starts at creation and never goes backwards, and a state the engine has nothing left
+  to do to at its own latest time. Anything else is refused and nothing is created.
+- **Restore cannot prove the history and the state agree in full.** The history is a record, not a
+  replayable input log, so an edited score in a well-formed state is accepted. Stored snapshots must
+  be writable only by trusted code.
+- **Nothing of the transport is saved.** Connections and bearer tokens live in the room and are not
+  in `GameState`. A restored game has all its players and none of their tokens.
+- **The history is unbounded** and a snapshot always contains all of it. No retention rule exists
+  and none was invented here.
+
+Nothing stores a snapshot yet. There is no database, file, timer or background save.
 
 ### The WebSocket transport (Phases 5C and 5D)
 
@@ -763,6 +792,7 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                  | **Complete** |
 | 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
 | 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
+| 5E      | Session snapshot and validated restore: the boundary persistence will use                                   | **Complete** |
 | Later   | Session registry, authentication and TLS, Redis, Game Master during a game, persistence, deployment         | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a

@@ -38,6 +38,9 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 > around one such session: connections join with a join code, are given a player id by the server,
 > send intents, and receive the authoritative state after each accepted change.
 >
+> Phase 5E lets a session describe itself as a snapshot and be rebuilt from one after validation,
+> which is the boundary a future persistence layer will use. Nothing stores a snapshot yet.
+>
 > Phase 5D adds lifecycle and control to that transport. A player who drops can resume on a new
 > connection with a token the server gave them at join; a player can leave before the game starts;
 > and whoever holds the game's host token can pause, resume or stop it and remove a player.

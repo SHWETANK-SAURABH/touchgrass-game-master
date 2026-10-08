@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { fixedClock } from '@touchgrass/shared';
 import { type EngineContext, contextAt, gameStateSchema } from '@touchgrass/game-engine';
+import { restoreGameSession } from '@touchgrass/game-session';
 import { type HostedGame, createHostedGame } from './hosted-game';
 import { type ServerMessage, parseClientMessage, serverMessageSchema } from './protocol';
 import { type RoomConnection, createRoom } from './room';
@@ -1100,5 +1101,59 @@ describe('a player removed behind the room', () => {
       /setTimeout|setInterval|setImmediate|queueMicrotask|\basync\b|\bawait\b|Promise|subscribe|addListener|\.on\(|EventEmitter|observe/i,
     );
     expect(code.match(/const reconcile = /g)).toHaveLength(1);
+  });
+});
+
+describe('the session snapshot and the room', () => {
+  it('contains no token, host capability or connection, however the room has been used', () => {
+    const { game, all, tokens } = running();
+    const host = asHost(game);
+    send(game, host, command({ type: 'PAUSE_SESSION', reason: 'water' }));
+    send(game, host, command({ type: 'RESUME_SESSION' }), NOW + 1_000);
+    game.room.disconnect(all[0] as TestConnection);
+    send(game, connection('again'), { type: 'resume', token: tokens[0] }, NOW + 2_000);
+
+    const snapshot = game.session.snapshot();
+    const text = JSON.stringify(snapshot);
+    for (const secret of [...tokens, game.hostToken]) expect(text).not.toContain(secret);
+    expect(text).not.toMatch(/token|host_auth|hostToken|connection|socket/i);
+    expect(Object.keys(snapshot).sort()).toEqual(['sessionId', 'state', 'version']);
+    expect(Object.keys(snapshot.state).sort()).toEqual(Object.keys(gameStateSchema.shape).sort());
+    expect(snapshot.state).toEqual(game.session.getState());
+  });
+
+  it('restores the game and none of the room: capabilities do not come back', () => {
+    const { game, tokens } = running();
+    const stored: unknown = JSON.parse(JSON.stringify(game.session.snapshot()));
+    const restored = restoreGameSession(stored);
+    if (!restored.ok) throw new Error('restore failed');
+    expect(restored.value.getState()).toEqual(game.session.getState());
+
+    // A room around the restored session is a new room. It knows no player
+    // token and no connection, and the old host token is not its own.
+    const room = createRoom({ session: restored.value, hostToken: 'a-new-host-token' });
+    const returning = connection('returning');
+    room.receive(returning, JSON.stringify({ type: 'resume', token: tokens[0] }), at(NOW));
+    room.receive(returning, JSON.stringify({ type: 'host_auth', token: game.hostToken }), at(NOW));
+    expect(returning.take()).toEqual([
+      { type: 'error', code: 'INVALID_TOKEN' },
+      { type: 'error', code: 'INVALID_TOKEN' },
+    ]);
+    expect(room.connectionCount()).toBe(0);
+    // The players are all still in the restored game.
+    expect(restored.value.getState().players.map((player) => player.status)).toEqual([
+      'active',
+      'active',
+      'active',
+    ]);
+  });
+
+  it('is not changed by taking a snapshot: play carries on', () => {
+    const { game, all } = running();
+    const before = game.session.getState();
+    game.session.snapshot();
+    expect(game.session.getState()).toBe(before);
+    game.room.tick(at(START + 180_000));
+    for (const who of all) expect(types(who.take())).toEqual(['update']);
   });
 });
