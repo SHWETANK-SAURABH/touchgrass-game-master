@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./game-master": "./src/game-master/index.ts",
-    "./handoff": "./src/handoff/index.ts"
+    "./handoff": "./src/handoff/index.ts",
+    "./eval": "./src/eval/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

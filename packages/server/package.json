@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@sentry/node": "^11.6.0",
     "@touchgrass/ai": "*",
     "@touchgrass/game-definitions": "*",
     "@touchgrass/game-engine": "*",

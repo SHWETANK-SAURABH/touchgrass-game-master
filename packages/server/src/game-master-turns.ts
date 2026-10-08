@@ -2,7 +2,7 @@ import { type Clock, systemClock } from '@touchgrass/shared';
 import { findGameDefinition } from '@touchgrass/game-definitions';
 import { contextAt } from '@touchgrass/game-engine';
 import type { SessionUpdate } from '@touchgrass/game-session';
-import type { GameMaster } from '@touchgrass/ai/game-master';
+import type { GameMaster, ToolCallRecord } from '@touchgrass/ai/game-master';
 import { handOffProposalTo } from '@touchgrass/ai/handoff';
 import type { PolicyOptions } from '@touchgrass/safety';
 import type { SessionHandle } from './session-handle';
@@ -89,6 +89,13 @@ export interface GameMasterAudit {
   readonly eventType?: string;
   /** How many replies the model was asked for. */
   readonly attempts?: number;
+  /** How long the turn took, from being started to its outcome, in milliseconds. */
+  readonly durationMs: number;
+  /**
+   * The tool calls the model made, in order: which tool, whether it answered,
+   * a code if it did not, and how long it took. Never what was asked or answered.
+   */
+  readonly toolCalls?: readonly ToolCallRecord[];
   /** For APPLIED: whether the changed game was then saved. */
   readonly saved?: boolean;
 }
@@ -104,6 +111,11 @@ export interface GameMasterTurnsOptions {
   readonly safety?: PolicyOptions;
   /** Told what each turn did. A listener that throws is ignored. */
   readonly onAudit?: (audit: GameMasterAudit) => void;
+  /**
+   * Told what was thrown when a turn ended in a way nothing here expects. The
+   * record of that turn says only UNEXPECTED; this is for whoever monitors errors.
+   */
+  readonly onUnexpectedError?: (error: unknown) => void;
 }
 
 export interface GameMasterTurns {
@@ -129,7 +141,7 @@ export function createGameMasterTurns(options: GameMasterTurnsOptions): GameMast
   const takeTurn = async (
     handle: SessionHandle,
     trigger: GameMasterTrigger,
-  ): Promise<GameMasterAudit> => {
+  ): Promise<Omit<GameMasterAudit, 'durationMs'>> => {
     invocations += 1;
     const base = {
       invocationId: `gm-${String(invocations)}`,
@@ -164,7 +176,8 @@ export function createGameMasterTurns(options: GameMasterTurnsOptions): GameMast
     });
     const proposing = gameMaster.propose(
       { state, definition, now: clock.now() },
-      { signal: limit },
+      // A tool is not run for a session that has been closed meanwhile.
+      { signal: limit, available: () => !handle.room.isClosed() },
     );
     // If the limit wins, the model's eventual answer or failure is dropped.
     proposing.catch(() => undefined);
@@ -180,9 +193,14 @@ export function createGameMasterTurns(options: GameMasterTurnsOptions): GameMast
         stage: 'PROPOSAL',
         code: proposed.error.modelErrorCode ?? proposed.error.code,
         ...(proposed.error.attempts === undefined ? {} : { attempts: proposed.error.attempts }),
+        ...(proposed.error.toolCalls?.length ? { toolCalls: proposed.error.toolCalls } : {}),
       };
     }
-    const answered = { ...base, attempts: proposed.value.attempts };
+    const answered = {
+      ...base,
+      attempts: proposed.value.attempts,
+      ...(proposed.value.toolCalls?.length ? { toolCalls: proposed.value.toolCalls } : {}),
+    };
 
     // The model took time. The session may have been unloaded meanwhile, and an
     // unloaded session is never changed and never brought back.
@@ -233,23 +251,33 @@ export function createGameMasterTurns(options: GameMasterTurnsOptions): GameMast
   return {
     run(handle, trigger) {
       const turn = (lastTurn.get(handle) ?? Promise.resolve()).then(async () => {
-        let audit: GameMasterAudit;
+        const startedAt = clock.now();
+        let taken: Omit<GameMasterAudit, 'durationMs'>;
         try {
-          audit = await takeTurn(handle, trigger);
-        } catch {
+          taken = await takeTurn(handle, trigger);
+        } catch (error) {
           // Nothing above is expected to throw. If something does, the turn is
           // over and the game is as the engine left it.
-          audit = {
+          taken = {
             invocationId: `gm-${String(invocations)}`,
             sessionId: handle.session.id,
             trigger,
-            at: clock.now(),
+            at: startedAt,
             provider: gameMaster.provider,
             model: gameMaster.model,
             outcome: 'FAILED',
             code: 'UNEXPECTED',
           };
+          try {
+            options.onUnexpectedError?.(error);
+          } catch {
+            // Being told is a courtesy.
+          }
         }
+        const audit: GameMasterAudit = {
+          ...taken,
+          durationMs: Math.max(0, clock.now() - startedAt),
+        };
         try {
           options.onAudit?.(audit);
         } catch {

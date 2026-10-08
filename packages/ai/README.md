@@ -93,6 +93,28 @@ state is returned unchanged, the event is not rewritten, and the model is not as
 An optional `safety` argument (`{ supervisedByAdult, maxRuleDurationSeconds }`) is passed to the
 policy. It can make a session stricter; it cannot switch a check off or cause an event to be applied.
 
+## Tools
+
+`createGameMaster({ provider, tools })` may be given read-only tools. The agent itself is still
+built with no native tools: a tool call is a structured reply, `{"tool":{"name":…,"input":…}}`,
+which this package checks and runs, and then asks the model again with the answer.
+
+- `tools/tool.ts`: the `GameMasterTool` interface, `createToolSet` (the allowlist), and
+  `runToolCall`, which turns every way a call can go wrong into a code.
+- `tools/game-tools.ts`: the two tools that exist, `game_history` and `game_rules`, and
+  `selectGameMasterTools(names)`.
+- A turn makes at most `maxToolCalls` calls (default 2, never more than 4). After that only a
+  proposal is accepted.
+- With no tools, the model is asked exactly as before.
+
+## Evaluation: `@touchgrass/ai/eval`
+
+`runEvalCase(case)` runs one case through the real Game Master, schema, engine and safety
+validator with a scripted model and returns `{ caseId, passed, expected, actual, stage, reason,
+durationMs }`. `GOLDEN_CASES` is the fixed set of scenarios; `runEvaluation` adds up rates.
+`eval/game-master.eval.live.ts` measures the real model and runs only with
+`GAME_MASTER_LIVE_EVAL=1 npm run ai:live`.
+
 ## Not implemented yet
 
 Nothing in this package decides when to ask the Game Master, and nothing here calls

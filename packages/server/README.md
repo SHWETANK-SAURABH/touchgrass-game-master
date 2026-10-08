@@ -84,6 +84,11 @@ Sessions are made and managed from its terminal, because nothing authenticates a
 | `evict <id>`      | Releases one from memory, saving it first if needed                        |
 | `quit`            | Saves what is unsaved and stops. Ctrl+C does the same                      |
 
+`GAME_MASTER_TOOLS=game_history,game_rules` lets the Game Master use those read-only tools.
+`SENTRY_ENABLED=true` with `SENTRY_DSN` (and optionally `SENTRY_ENVIRONMENT`) reports unexpected
+errors to Sentry. `metrics` prints this process's counters as JSON. Session events and Game Master
+turns are written as one JSON line each.
+
 With `GAME_MASTER_ENABLED=true` the games get a Game Master (see [The Game Master](#the-game-master));
 `gm <id>` takes one turn for a session by hand. It is off by default and the server needs no model.
 
@@ -533,6 +538,57 @@ round begins (engine)  →  Game Master proposes  →  schema  →  engine: lega
 settings, prints one line per turn, and has a `gm <id>` command. The full description, the
 configuration and the failure table are in [AI.md](../../AI.md#the-game-master-in-a-live-game).
 
+## Observability
+
+```ts
+startSessionServer({ store, port, observability: { metrics, logger, reporter } });
+```
+
+Each part is optional. With none, the server behaves exactly the same.
+
+**Metrics.** `createMetrics()` is a fixed set of counters and timers in memory, with no labels:
+
+| Counters                                                                                                |
+| ------------------------------------------------------------------------------------------------------- |
+| `game_master_invocations`, `_successes`, `_failures`, `_timeouts`, `_skipped`                           |
+| `game_master_safety_rejections`, `_engine_rejections`, `_schema_rejections`                             |
+| `tool_invocations`, `tool_failures`                                                                     |
+| `session_creates`, `session_loads`, `session_evictions`, `session_eviction_failures`, `session_unloads` |
+| `websocket_connections_opened`, `_refused`, `_closed`                                                   |
+| `persistence_failures`, `unexpected_errors`                                                             |
+
+Timers: `game_master_turn_ms`, `tool_call_ms` (count, total, maximum). A name that is not on the
+list is ignored, so a session id or a model reply cannot become a metric. `metrics.read()` returns
+a copy. Nothing exports or scrapes them.
+
+**Logs.** With a `Logger` from `@touchgrass/shared`, each session event, Game Master turn and
+socket event is one JSON line. A line may name a session. It never contains a token, a prompt, a
+reply or game data, and for an unexpected error it says where it happened, not what the error said.
+
+**Error reports.** An `ErrorReporter` is told about unexpected errors (a Game Master turn that
+threw, a tool that threw, a listener error, a failing route) and about persistence failures that
+have a stable code (an eviction that could not save, an applied Game Master event that could not
+be saved, a shutdown that left sessions unsaved). The default reporter does nothing.
+
+- A report carries tags from a fixed list: `area`, `stage`, `code`, `provider`, `model`, `tool`.
+  There is no session id, player or token among them.
+- Error text is scrubbed before it leaves: anything that looks like an address with a scheme, and
+  any long run of token-like characters, is replaced. It is blunt on purpose.
+- Reporting never changes what it reports on. A reporter, a logger or a metric that fails is
+  ignored, and nothing is rolled back.
+
+**Sentry.** `sentry.ts` is the one module that imports `@sentry/node`, and nothing loads it unless
+`SENTRY_ENABLED=true` and `SENTRY_DSN` are set. Every automatic integration is off, so the SDK
+hooks nothing and records no breadcrumbs; it sends what the application reports and nothing else.
+`beforeSend` removes the user, request, breadcrumbs, extra data, host name and any tag not on the
+list. The tests run the real SDK with the network replaced, so they need no account.
+
+**Recent Game Master records.** `server.recentGameMasterAudits()` returns the last 200, from
+memory. Nothing stores them.
+
+**Limits.** One process, in memory. No metrics endpoint, no tracing, no log shipping. The
+single-game server (`startPersistentServer`) is not wired to any of this.
+
 ## Session lifecycle and eviction
 
 ```
@@ -790,7 +846,7 @@ it afterwards.
 
 Autosave, saving per action, retries, transactions, revision checks, locks, creating a session
 over the network, join-code routing, a limit on loaded sessions, forced eviction, authentication,
-stored tokens,
+stored tokens, a stored audit trail, a metrics endpoint, tracing,
 token rotation, replaying missed updates to a returning client, several servers sharing a game,
 Redis, and any adjustment of a running game's clock on load.
 

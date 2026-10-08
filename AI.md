@@ -544,9 +544,11 @@ it may propose. It is never given a player token, the host token, the token key,
 engine's first history summary names it, and it is redacted from the view), the random seed, the
 session id, a connection, the store, or any configuration. The state object it is shown is frozen.
 
-**What the model can reach.** Nothing. The agent is built with no tools. It is called with a value
-and returns a value. It is never handed the session, the room, the engine, the store or a socket,
-and the code that asks it imports no file, shell or network API.
+**What the model can reach.** Nothing that acts. The agent is built with no native tools. It is
+called with a value and returns a value. It is never handed the session, the room, the engine, the
+store or a socket, and the code that asks it imports no file, shell or network API. If the
+application lists read-only [tools](#tools), the model may ask a question about its own game and
+is given the answer; that is all a tool is.
 
 **Where a turn can stop.** Each of these ends the turn with nothing applied, nothing broadcast and
 nothing saved, and the game carries on:
@@ -589,16 +591,17 @@ them.
 
 ### Configuration
 
-| Variable                   | Meaning                                     | Default                  |
-| -------------------------- | ------------------------------------------- | ------------------------ |
-| `GAME_MASTER_ENABLED`      | Give the multi-session server a Game Master | `false`                  |
-| `GAME_MASTER_TIMEOUT_MS`   | How long one turn may wait for the model    | `20000`                  |
-| `MODEL_PROVIDER`           | `ollama` or `openai-compatible`             | `ollama`                 |
-| `MODEL_NAME`               | The model tag                               | `gemma3:4b`              |
-| `MODEL_BASE_URL`           | Where the runtime listens                   | `http://localhost:11434` |
-| `MODEL_REQUEST_TIMEOUT_MS` | One request to the runtime                  | `30000`                  |
-| `MODEL_MAX_RETRIES`        | Transport retries                           | `2`                      |
-| `MODEL_TEMPERATURE`        | Sampling temperature                        | `0.8`                    |
+| Variable                   | Meaning                                          | Default                  |
+| -------------------------- | ------------------------------------------------ | ------------------------ |
+| `GAME_MASTER_ENABLED`      | Give the multi-session server a Game Master      | `false`                  |
+| `GAME_MASTER_TIMEOUT_MS`   | How long one turn may wait for the model         | `20000`                  |
+| `GAME_MASTER_TOOLS`        | Tools it may use, e.g. `game_history,game_rules` | none                     |
+| `MODEL_PROVIDER`           | `ollama` or `openai-compatible`                  | `ollama`                 |
+| `MODEL_NAME`               | The model tag                                    | `gemma3:4b`              |
+| `MODEL_BASE_URL`           | Where the runtime listens                        | `http://localhost:11434` |
+| `MODEL_REQUEST_TIMEOUT_MS` | One request to the runtime                       | `30000`                  |
+| `MODEL_MAX_RETRIES`        | Transport retries                                | `2`                      |
+| `MODEL_TEMPERATURE`        | Sampling temperature                             | `0.8`                    |
 
 ```
 MONGODB_URI=mongodb://127.0.0.1:27017 GAME_MASTER_ENABLED=true npm run sessions:dev
@@ -623,15 +626,150 @@ GAME_MASTER_LIVE_TEST=1 npx vitest run packages/server/src/game-master.test.ts -
 
 ---
 
+## Tools
+
+The Game Master may be given a short list of read-only tools: narrow questions it can ask about the
+one game it is looking at. Tools do not make it an agent that acts. It still observes, proposes a
+value, and stops; everything after that is the same deterministic pipeline.
+
+```
+model  →  { "tool": { "name": …, "input": … } }     a request, as structured output
+       →  the application checks and runs it          never the model, never Mastra
+       →  the answer goes back as data
+       →  model  →  { "rationale": …, "event": … }    a proposal, into the usual pipeline
+```
+
+**How a tool call works.** The Mastra agent is still built with `tools: {}`, so the model is never
+offered a native tool and the runtime never executes one. A tool call is a reply in a second
+structured-output shape, which the Game Master module recognises, checks and runs itself, and then
+asks the model again with the answer. This works with a model that has no native tool calling,
+which the local Gemma does not.
+
+**The tools that exist.** Two, both defined in `packages/ai/src/tools/game-tools.ts`:
+
+| Tool           | Answers                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| `game_history` | Entries of this game's record further back than the ten the model is always shown          |
+| `game_rules`   | How this game is scored, round length, proposal limits, and the risks its designers listed |
+
+There is no tool for the players, the round, the time left or what is in force: the model is given
+those with every request, and a tool that repeated them would cost a model call and add nothing.
+
+**The security model.**
+
+| Rule                                | How it is enforced                                                                            |
+| ----------------------------------- | --------------------------------------------------------------------------------------------- |
+| The application decides which exist | A fixed list passed to `createGameMaster({ tools })`. No discovery, no plugins                |
+| A tool is on the list or is refused | `UNKNOWN_TOOL`. The name the model asked for is not even recorded                             |
+| Input fits the tool's schema        | `INVALID_ARGUMENTS`, checked before the tool runs                                             |
+| A tool cannot name another session  | No tool takes a session id, and a tool is handed one game's frozen state only                 |
+| A tool cannot change anything       | It is given a frozen state and nothing else: no session, room, store or socket                |
+| A tool answers in time              | `TOOL_TIMEOUT` after 2 seconds by default                                                     |
+| Output fits the tool's schema       | `INVALID_OUTPUT`                                                                              |
+| Output is small                     | `OUTPUT_TOO_LARGE` above 4 KB by default                                                      |
+| A tool that throws is contained     | `TOOL_FAILED`. The model is told the code and never the message or the stack                  |
+| The game is still wanted            | `SESSION_UNAVAILABLE`: no tool is run for a session that has been closed                      |
+| The loop is the application's       | At most 2 tool calls per turn by default, never more than 4. Then only a proposal is accepted |
+
+A failed tool call is an answer to the model, not an exception: the turn goes on, and the game is
+unaffected. Using a tool earns no trust. Whatever the model proposes afterwards goes through the
+schema, the engine and the safety validator exactly as before.
+
+**What tools are not.** They are not shell, files, network, database or WebSocket access, and none
+of those exists as a tool. They cannot mutate a game. A future tool that should cause a change must
+return a proposal, which then takes the same path as any other.
+
+**Off by default.** With no tools listed, the model is asked exactly as it was before tools
+existed: the same prompt, the same output schema, the same requests.
+
+## The record of a turn
+
+Every Game Master turn in a live session produces one structured record:
+
+| Field               | Meaning                                                                        |
+| ------------------- | ------------------------------------------------------------------------------ |
+| `invocationId`      | An id for the turn, unique within the process                                  |
+| `sessionId`         | Which session                                                                  |
+| `trigger`           | `round_start` or `manual`                                                      |
+| `provider`, `model` | Which model was asked                                                          |
+| `at`, `durationMs`  | When the turn started and how long it took                                     |
+| `outcome`           | `APPLIED`, `NO_EVENT`, `REJECTED`, `FAILED` or `SKIPPED`                       |
+| `stage`, `code`     | Where a refusal or failure happened, and a stable code                         |
+| `eventType`         | The kind of event proposed, when a proposal got that far                       |
+| `attempts`          | How many replies the model was asked for                                       |
+| `toolCalls`         | For each tool call: the tool's name, whether it answered, a code, its duration |
+| `saved`             | For `APPLIED`: whether the changed game was then saved                         |
+
+It never contains a prompt, a reply, a rationale, a tool's input or output, a player, a token or a
+key. The schema result, the safety result and the engine result are all in `outcome` and `stage`:
+`REJECTED` at `SCHEMA`, `SAFETY`, or `STATE`/`APPLICATION`.
+
+**It is not stored.** The record goes to a callback, to the structured log, and into a bounded
+in-memory list of the most recent ones (`server.recentGameMasterAudits()`). Persisting it was
+considered and left out: the store keeps one snapshot per session and nothing else, and an audit
+trail would need a second collection and a second interface. That is a persistence redesign, not
+an addition, so it is recorded here as a limitation instead. Because the record is separate from
+the game, a listener that fails, or a reporter that fails, cannot undo an event the engine applied.
+
+## Evaluation
+
+`@touchgrass/ai/eval` is a harness that runs a case through the real pipeline and says what
+happened:
+
+```ts
+const result = await runEvalCase(evalCase);
+// { caseId, passed, expected, actual, stage?, reason?, durationMs }
+```
+
+A case names a game state, what the model replies, and what must follow. The real Game Master
+agent, schema, engine validator, safety validator and engine run over it. Only the model is
+replaced, by a script, so an evaluation is exact and needs no model runtime.
+
+Every case is also held to four invariants, whatever it expects: a turn that applied nothing left
+the game untouched; an applied event is recorded by the engine as the Game Master's; the join code
+was never sent to the model; the model was never offered a native tool.
+
+**Golden scenarios.** `GOLDEN_CASES` is the fixed set: a safe event, an unsafe event, an invalid
+event, a decision to do nothing, malformed output, a critical hazard (with and without claimed
+supervision), an unknown or lifecycle event, an engine refusal, a model that is away or slow, and
+every way a tool call can succeed or fail, including a tool that is not on the list, a call that
+names another session, and a model that only ever asks for tools. They assert outcomes and stages,
+never wording, so a prompt can be rewritten without touching them. Session isolation and the
+persistence and realtime results need a server and are covered in the server package's tests.
+
+**Safety regression.** `packages/safety/src/regression.test.ts` is separate from all of this and
+uses no model code at all. See [SAFETY.md](./SAFETY.md#the-regression-suite).
+
+**Live evaluation.** Opt-in, against the real runtime:
+
+```
+GAME_MASTER_LIVE_EVAL=1 npm run ai:live
+```
+
+It asks the real model for a proposal in a fixed set of games, with and without tools, puts every
+answer through the real pipeline, and prints the valid structured output rate, schema rejection
+rate, safety rejection rate, engine acceptance rate, timeout rate, tool-call success rate and
+latency. These are measurements, not pass marks. What it asserts is only that every turn ended in
+a known way and no invariant broke. `GAME_MASTER_LIVE_EVAL_RUNS` sets how many turns per game
+(default 3).
+
+One run on this project's development machine, `gemma3:4b` on local Ollama, 15 turns: 15 well-formed
+proposals, 14 applied and 1 decision to do nothing, no schema or safety rejections, no timeouts,
+every tool call answered, median 2.3 seconds a turn. In that run 12 of the 14 events were a
+`TIME_EXTENSION`: the model is reliable in form and narrow in what it chooses. That is one small
+sample from one machine, not a benchmark.
+
 ## 8. What comes next
 
 Not built:
 
 | Piece                                    | Notes                                                                                             |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Showing or storing safety verdicts       | A turn's record goes to a callback. There is no UI to show it and nothing persists it             |
+| Storing the record of a turn             | Kept in memory and logged. Nothing persists it: that needs a second store, not built              |
+| Showing safety verdicts                  | The record says a proposal was refused for safety, not which rule matched. There is no UI         |
 | A Game Master for the single-game server | Only the multi-session server (`startSessionServer`) has one                                      |
-| Tools for the model                      | None exist. The agent is built with no tools on purpose                                           |
+| Tools that act                           | Every tool is read-only. Nothing a tool does can change a game                                    |
+| Native tool calling                      | Not used. Tool requests are structured output, checked and run by the application                 |
 | More triggers                            | Only a round beginning, and an explicit call                                                      |
 | Limits on how often events are proposed  | One turn per round start. The engine still accepts any number of valid events from explicit calls |
 | Host control over the Game Master        | A host cannot pause, veto or configure it from a client                                           |

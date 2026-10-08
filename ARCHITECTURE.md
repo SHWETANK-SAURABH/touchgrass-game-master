@@ -269,6 +269,9 @@ order give the same roles on any host.
 | Idle and finished sessions evicted from memory    | Phase 5P: `evict`, `evictIdle`; saved first, never deleted       |
 | Many games, development entry point               | Phase 5P: `npm run sessions:dev`                                 |
 | Game Master in live games                         | `GAME_MASTER_ENABLED`; asked at round start; off by default      |
+| Read-only tools for the Game Master               | `GAME_MASTER_TOOLS`; checked and run by the application          |
+| Evaluation harness and golden scenarios           | `@touchgrass/ai/eval`; live evaluation is opt-in                 |
+| Metrics, structured logs, optional Sentry         | `createObserver`; `SENTRY_ENABLED`; off by default               |
 | Authentication, token rotation                    | Later                                                            |
 
 ---
@@ -646,6 +649,31 @@ realtime broadcast → persistence`.
     arrives after its session was unloaded.
   - **Off by default.** Without `GAME_MASTER_ENABLED=true` no model code is loaded and no model
     runtime is needed. Only the multi-session server has a Game Master. See [AI.md](./AI.md).
+- **Tools, evaluation and observability.**
+  - **Read-only tools, run by the application.** The Game Master may be given a fixed list of
+    tools (`game_history`, `game_rules`). The Mastra agent still has no native tools: a tool call
+    is a structured reply that the Game Master module checks and runs itself. A tool is handed one
+    game's frozen state and nothing else, so it cannot change a game or reach another session.
+    Every call is checked for allowlist, input schema, timeout, output schema and output size, and
+    a turn makes at most a small fixed number of calls. With no tools listed, nothing changes.
+  - **One record per turn.** The audit record now carries the duration and the tool calls (name,
+    outcome, code, duration). It goes to a callback, the log and a bounded in-memory list. It is
+    not persisted: that would take a second store. It never undoes what the engine applied.
+  - **A deterministic evaluation harness.** `@touchgrass/ai/eval` runs a case through the real
+    agent, schema, engine and safety validator with a scripted model, and returns a structured
+    result. A fixed set of golden scenarios asserts outcomes, not wording. A separate safety
+    regression suite covers every external event kind against every game with no model code.
+    Evaluation against the real model is opt-in and prints rates and latency.
+  - **Counters, lines and reports.** `createObserver` listens to what the server already emits
+    (session events, turn records, socket events) and updates a fixed set of label-free counters
+    and timers, writes one JSON line each, and reports unexpected errors and persistence failures
+    through an `ErrorReporter`. The default reporter does nothing.
+  - **Sentry is an adapter, off by default.** `SENTRY_ENABLED=true` and a DSN load the one module
+    that imports the SDK. Automatic integrations are off; only what the application reports is
+    sent, with tags from a fixed list and error text scrubbed of addresses and token-like strings.
+    No session id, player, token, prompt or game data is sent.
+  - **Still one process.** Metrics are in memory and exported nowhere. There is no tracing and no
+    distributed observability.
 - **A server makes its saves one at a time (Phase 5L).** Saves on one `PersistentServer` wait for
   the one before, so the store never has two writes from that server in flight and a later save
   never stores an older state. A waiting save captures the game when it starts, not when it was
@@ -1082,7 +1110,7 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 | 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
 | 5H      | MongoDB adapter for the SessionStore interface                                                              | **Complete** |
 | 5I      | Persistent server: create, load, explicit save and shutdown around one game                                 | **Complete** |
-| Later   | Save cadence, authentication and TLS, token persistence, Redis, model tools, deployment                     | Planned      |
+| Later   | Save cadence, authentication and TLS, token persistence, Redis, stored audit, deployment                    | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

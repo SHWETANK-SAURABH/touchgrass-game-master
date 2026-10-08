@@ -234,6 +234,14 @@ package released. A closed room refuses.
 after it, whether or not anyone is connected. It is what the connections are sent. A listener
 cannot alter it, and one that throws is ignored.
 
+### Being told what happens at the listener
+
+`createRoutedRealtimeServer({ …, onSocket, onError })`. `onSocket` is told when a socket opens,
+is given its room, is refused (with the code it was sent) and closes: the kind of thing that
+happened, never an address or a session. `onError` is handed an error the listener reports after
+it has started, and whatever a failing `route` threw; the client is still told only
+`SESSION_UNAVAILABLE`. Listeners that throw are ignored.
+
 ### Knowing whether a room is in use
 
 ```ts

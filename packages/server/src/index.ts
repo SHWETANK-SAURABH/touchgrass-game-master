@@ -2,10 +2,12 @@ export {
   DEFAULT_DATABASE_NAME,
   DEFAULT_SERVER_PORT,
   DEFAULT_SESSION_SWEEP_MS,
+  type ErrorReportingConfig,
   type GameMasterConfig,
   type LifecycleConfig,
   type ServerConfig,
   type ServerConfigError,
+  parseErrorReportingConfig,
   parseGameMasterConfig,
   parseLifecycleConfig,
   parseServerConfig,
@@ -69,3 +71,32 @@ export {
 } from './session-server';
 
 export { type PlayerTokens, createPlayerTokens } from './player-tokens';
+
+export {
+  COUNTER_NAMES,
+  TIMER_NAMES,
+  type CounterName,
+  type Metrics,
+  type MetricsSnapshot,
+  type TimerName,
+  type TimerSnapshot,
+  createMetrics,
+} from './metrics';
+
+export {
+  REPORT_TAG_NAMES,
+  type ErrorReporter,
+  type ReportTagName,
+  type ReportTags,
+  cleanTags,
+  noopReporter,
+  scrubText,
+  toReportableError,
+} from './reporting';
+
+export {
+  type ObservabilityOptions,
+  type Observer,
+  type SocketEvent,
+  createObserver,
+} from './observability';

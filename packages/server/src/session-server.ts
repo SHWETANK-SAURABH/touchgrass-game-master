@@ -11,6 +11,7 @@ import {
   createGameMasterTurns,
   gameMasterTriggerFor,
 } from './game-master-turns';
+import { type ObservabilityOptions, createObserver } from './observability';
 import type { ClosableSessionStore } from './persistent-server';
 import {
   type RegistryShutdownResult,
@@ -67,6 +68,11 @@ export interface SessionServerOptions {
    * and the games run exactly as they do without it.
    */
   readonly gameMaster?: GameMasterTurnsOptions;
+  /**
+   * Counters, log lines and error reports for everything this server runs. Each
+   * part is optional, and with none of them the server behaves exactly the same.
+   */
+  readonly observability?: ObservabilityOptions;
 }
 
 export interface SessionServer {
@@ -79,6 +85,8 @@ export interface SessionServer {
   readonly registry: SessionRegistry;
   /** How many sockets are open, with a session or not. */
   readonly socketCount: () => number;
+  /** The most recent Game Master records, oldest first. Kept in memory only. */
+  readonly recentGameMasterAudits: () => readonly GameMasterAudit[];
   /**
    * Takes one Game Master turn for a session that is loaded here, for trusted
    * server code. It resolves with what the turn did. Nothing is loaded for it:
@@ -122,10 +130,26 @@ export interface SessionServerError {
 export async function startSessionServer(
   options: SessionServerOptions,
 ): Promise<Result<SessionServer, SessionServerError>> {
-  const turns = options.gameMaster
+  const observer = createObserver(options.observability);
+  const gameMaster = options.gameMaster;
+  const turns = gameMaster
     ? createGameMasterTurns({
         ...(options.clock ? { clock: options.clock } : {}),
-        ...options.gameMaster,
+        ...gameMaster,
+        // The caller's own listeners are still told; the observer is told first.
+        onAudit: (audit) => {
+          observer.onGameMasterAudit(audit);
+          gameMaster.onAudit?.(audit);
+        },
+        onUnexpectedError: (error) => {
+          observer.onUnexpectedError(error, {
+            area: 'game_master',
+            stage: 'turn',
+            provider: gameMaster.gameMaster.provider,
+            model: gameMaster.gameMaster.model,
+          });
+          gameMaster.onUnexpectedError?.(error);
+        },
       })
     : undefined;
   let stopping: Promise<RegistryShutdownResult> | undefined;
@@ -137,7 +161,10 @@ export async function startSessionServer(
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
     ...(options.finishedIdleMs === undefined ? {} : { finishedIdleMs: options.finishedIdleMs }),
-    ...(options.onEvent ? { onEvent: options.onEvent } : {}),
+    onEvent: (event) => {
+      observer.onSessionEvent(event);
+      options.onEvent?.(event);
+    },
     // The trigger policy is applied here, to what the engine recorded. The
     // model has no say in whether or when it is asked.
     ...(turns
@@ -175,6 +202,10 @@ export async function startSessionServer(
   try {
     realtime = await createRoutedRealtimeServer({
       route,
+      onSocket: observer.onSocketEvent,
+      onError: (error) => {
+        observer.onUnexpectedError(error, { area: 'realtime', stage: 'listener' });
+      },
       port: options.port,
       ...(options.clock ? { clock: options.clock } : {}),
       ...(options.host ? { host: options.host } : {}),
@@ -185,7 +216,19 @@ export async function startSessionServer(
 
   const stop = async (): Promise<RegistryShutdownResult> => {
     const result = await registry.shutdown();
-    await realtime.close();
+    if (!result.ok) {
+      observer.onFailure('server shutdown incomplete', {
+        area: 'persistence',
+        stage: 'shutdown',
+        code: result.error.storeClosed ? 'SESSIONS_NOT_SAVED' : 'STORE_NOT_CLOSED',
+      });
+    }
+    try {
+      await realtime.close();
+    } catch (error) {
+      observer.onUnexpectedError(error, { area: 'realtime', stage: 'close' });
+      throw error;
+    }
     return result;
   };
 
@@ -193,6 +236,7 @@ export async function startSessionServer(
     port: realtime.port,
     registry,
     socketCount: realtime.socketCount,
+    recentGameMasterAudits: observer.recentAudits,
     runGameMaster(sessionId) {
       const notRun = (code: GameMasterNotRun['code']): Promise<GameMasterNotRun> =>
         Promise.resolve({ outcome: 'SKIPPED', sessionId, code });

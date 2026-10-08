@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import {
   createJoinCode,
+  createLogger,
   createSessionId,
   parseServerEnv,
   seedFromString,
@@ -8,8 +9,15 @@ import {
 } from '@touchgrass/shared';
 import { contextAt } from '@touchgrass/game-engine';
 import { createMongoSessionStore } from '@touchgrass/session-store/mongodb';
-import { parseGameMasterConfig, parseLifecycleConfig, parseServerConfig } from './config';
+import {
+  parseErrorReportingConfig,
+  parseGameMasterConfig,
+  parseLifecycleConfig,
+  parseServerConfig,
+} from './config';
 import type { GameMasterTurnsOptions } from './game-master-turns';
+import { createMetrics } from './metrics';
+import { type ErrorReporter, noopReporter } from './reporting';
 import { startSessionServer } from './session-server';
 
 /**
@@ -27,6 +35,10 @@ import { startSessionServer } from './session-server';
  *   SESSION_SWEEP_MS           how often to look for sessions to evict (default 1 minute)
  *   GAME_MASTER_ENABLED        true to give the games a Game Master (default false)
  *   GAME_MASTER_TIMEOUT_MS     how long one Game Master turn may wait (default 20 seconds)
+ *   GAME_MASTER_TOOLS          read-only tools it may use, e.g. game_history,game_rules (default none)
+ *   SENTRY_ENABLED             true to report unexpected errors to Sentry (default false)
+ *   SENTRY_DSN                 where to report; required when reporting is on
+ *   SENTRY_ENVIRONMENT         default "development"
  *   MODEL_PROVIDER, MODEL_NAME, MODEL_BASE_URL, ...   the model, as for the web app
  *
  * Sessions are not created over the network. This terminal is where they are
@@ -37,6 +49,11 @@ import { startSessionServer } from './session-server';
  *   save <id>         save one now
  *   evict <id>        release one from memory, saving it first if needed
  *   gm <id>           take one Game Master turn for a session now
+ *   metrics           the counters and timers of this process, as JSON
+ *
+ * What happens to sessions, and what each Game Master turn did, is written as
+ * one JSON line each. A line names a session and an outcome. It never contains
+ * a player token, a prompt, a reply or anything from a game.
  *   quit              save what is unsaved and stop
  *
  * A stored session that is not in memory is loaded when someone connects to it,
@@ -53,32 +70,42 @@ import { startSessionServer } from './session-server';
 const config = parseServerConfig(process.env);
 const lifecycle = parseLifecycleConfig(process.env);
 const gameMasterConfig = parseGameMasterConfig(process.env);
-if (!config.ok || !lifecycle.ok || !gameMasterConfig.ok) {
+const reporting = parseErrorReportingConfig(process.env);
+if (!config.ok || !lifecycle.ok || !gameMasterConfig.ok || !reporting.ok) {
   console.error('The server is not configured:');
-  for (const result of [config, lifecycle, gameMasterConfig]) {
+  for (const result of [config, lifecycle, gameMasterConfig, reporting]) {
     if (!result.ok) for (const issue of result.error.issues) console.error(`  ${issue}`);
   }
   process.exit(1);
 }
 
+// With error reporting off, the Sentry SDK is not even loaded.
+const reporter: ErrorReporter = reporting.value.enabled
+  ? (await import('./sentry')).createSentryReporter(reporting.value)
+  : noopReporter;
+const metrics = createMetrics();
+const logger = createLogger({ name: 'sessions' });
+
 // With the Game Master off, the model code is not even loaded.
 let gameMaster: GameMasterTurnsOptions | undefined;
 if (gameMasterConfig.value.enabled) {
   try {
-    const { createGameMasterFromEnv } = await import('@touchgrass/ai/game-master');
+    const { createGameMasterFromEnv, selectGameMasterTools } =
+      await import('@touchgrass/ai/game-master');
     gameMaster = {
-      gameMaster: createGameMasterFromEnv(parseServerEnv(process.env)),
+      gameMaster: createGameMasterFromEnv(parseServerEnv(process.env), {
+        // The tools it may use are the ones named here, and no others.
+        tools: selectGameMasterTools(gameMasterConfig.value.tools),
+        onToolError: (tool, error) => {
+          reporter.captureError(error, { area: 'tool', tool });
+        },
+      }),
       timeoutMs: gameMasterConfig.value.timeoutMs,
-      // What a turn did: ids, the model and an outcome. Never a prompt or a reply.
-      onAudit: (audit) => {
-        const detail = [audit.stage, audit.code, audit.eventType].filter(Boolean).join(' ');
-        console.log(
-          `[game master ${audit.sessionId}] ${audit.invocationId} ${audit.trigger}: ${audit.outcome}${detail ? ` (${detail})` : ''}`,
-        );
-      },
     };
   } catch {
-    console.error('The Game Master is not configured: check the MODEL_* settings.');
+    console.error(
+      'The Game Master is not configured: check the MODEL_* settings and GAME_MASTER_TOOLS.',
+    );
     process.exit(1);
   }
 }
@@ -92,10 +119,8 @@ const started = await startSessionServer({
   idleMs: lifecycle.value.idleMs,
   finishedIdleMs: lifecycle.value.finishedIdleMs,
   ...(gameMaster ? { gameMaster } : {}),
-  // The session id, what happened, and an error code at most.
-  onEvent: (event) => {
-    console.log(`[session ${event.sessionId}] ${event.type}${event.code ? `: ${event.code}` : ''}`);
-  },
+  // Counted, written as JSON lines, and reported when something is wrong.
+  observability: { metrics, logger, reporter },
 });
 
 if (!started.ok) {
@@ -112,10 +137,11 @@ console.log(`TouchGrass sessions server (development) listening on port ${server
 console.log(`Connect to ws://localhost:${server.port}/sessions/<sessionId>`);
 console.log(
   gameMaster
-    ? `Game Master: on (${gameMaster.gameMaster.provider}, ${gameMaster.gameMaster.model}). It is asked when a round begins.`
+    ? `Game Master: on (${gameMaster.gameMaster.provider}, ${gameMaster.gameMaster.model}). It is asked when a round begins. Tools: ${gameMasterConfig.value.tools.join(', ') || 'none'}.`
     : 'Game Master: off. Set GAME_MASTER_ENABLED=true to turn it on.',
 );
-console.log('Commands: create [gameId], list, save <id>, evict <id>, gm <id>, quit');
+console.log(`Error reporting: ${reporting.value.enabled ? 'on' : 'off'}.`);
+console.log('Commands: create [gameId], list, save <id>, evict <id>, gm <id>, metrics, quit');
 
 // The one timer: it only asks the registry to look. The registry has none.
 const sweep = setInterval(() => {
@@ -162,9 +188,12 @@ const shutdown = async (): Promise<void> => {
       process.exit(1);
     }
     console.log('Stopped.');
+    await reporter.flush();
     process.exit(0);
-  } catch {
+  } catch (error) {
     console.error('The server did not stop cleanly.');
+    reporter.captureError(error, { area: 'server', stage: 'shutdown' });
+    await reporter.flush();
     process.exit(1);
   }
 };
@@ -201,13 +230,16 @@ terminal.on('line', (line) => {
         if (!('invocationId' in turn)) console.log(`No turn: ${turn.code}`);
       });
       break;
+    case 'metrics':
+      console.log(JSON.stringify(metrics.read()));
+      break;
     case 'quit':
       void shutdown();
       break;
     case '':
       break;
     default:
-      console.log('Commands: create [gameId], list, save <id>, evict <id>, gm <id>, quit');
+      console.log('Commands: create [gameId], list, save <id>, evict <id>, gm <id>, metrics, quit');
   }
 });
 

@@ -78,6 +78,20 @@ export interface RoutedRealtimeServerOptions {
   readonly host?: string;
   /** Frames larger than this are refused and the socket is closed. */
   readonly maxMessageBytes?: number;
+  /**
+   * Told when a socket connects, is given its room, is refused, and closes. It
+   * is told the kind of thing that happened and, for a refusal, the code sent:
+   * never an address or a session. A listener that throws is ignored.
+   */
+  readonly onSocket?: (event: {
+    readonly type: 'opened' | 'attached' | 'refused' | 'closed';
+    readonly code?: RouteError;
+  }) => void;
+  /**
+   * Told what went wrong when the listener itself reports an error after it
+   * started, or when `route` throws. A listener that throws is ignored.
+   */
+  readonly onError?: (error: unknown) => void;
 }
 
 export interface RoutedRealtimeServer {
@@ -96,6 +110,21 @@ export function createRoutedRealtimeServer(
   const clock = options.clock ?? systemClock;
   const maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
 
+  const tell = (type: 'opened' | 'attached' | 'refused' | 'closed', code?: RouteError): void => {
+    try {
+      options.onSocket?.({ type, ...(code ? { code } : {}) });
+    } catch {
+      // Being told is a courtesy.
+    }
+  };
+  const failed = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // Being told is a courtesy.
+    }
+  };
+
   return new Promise((resolve, reject) => {
     const server = new WebSocketServer({
       port: options.port,
@@ -108,6 +137,7 @@ export function createRoutedRealtimeServer(
       /** The room this socket belongs to, once it has one. */
       let room: Room | undefined;
       let gone = false;
+      tell('opened');
       const connection: RoomConnection = {
         send: (text) => {
           socket.send(text);
@@ -119,6 +149,7 @@ export function createRoutedRealtimeServer(
 
       const refuse = (code: RouteError): void => {
         if (gone) return;
+        tell('refused', code);
         try {
           socket.send(encodeServerMessage({ type: 'error', code }));
         } catch {
@@ -131,6 +162,7 @@ export function createRoutedRealtimeServer(
       };
 
       const leave = (): void => {
+        if (!gone) tell('closed');
         gone = true;
         room?.disconnect(connection);
         room = undefined;
@@ -150,7 +182,10 @@ export function createRoutedRealtimeServer(
       socket.pause();
       void Promise.resolve()
         .then(() => options.route(sessionId))
-        .catch((): RouteError => 'SESSION_UNAVAILABLE')
+        .catch((error: unknown): RouteError => {
+          failed(error);
+          return 'SESSION_UNAVAILABLE';
+        })
         .then((found) => {
           // The socket went away while its room was being found: nothing to attach.
           if (gone) return;
@@ -158,6 +193,7 @@ export function createRoutedRealtimeServer(
           // The room was closed between being found and now.
           if (!found.attach(connection)) return refuse('SESSION_CLOSED');
           room = found;
+          tell('attached');
           socket.resume();
         });
     });
@@ -165,6 +201,9 @@ export function createRoutedRealtimeServer(
     server.once('error', reject);
     server.once('listening', () => {
       server.off('error', reject);
+      // From here an error of the listener has nobody waiting for it. It is
+      // handed to whoever monitors errors instead of going unobserved.
+      server.on('error', failed);
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : options.port;
       resolve({

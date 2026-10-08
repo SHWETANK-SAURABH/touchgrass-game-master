@@ -234,6 +234,7 @@ describe('A, N, O and P. a proposal that is legal and safe', () => {
       outcome: 'APPLIED',
       eventType: 'ZONE_CHANGE',
       saved: true,
+      durationMs: 0,
     });
     expect(calls).toHaveLength(1);
 
@@ -578,6 +579,7 @@ describe('Q and R. a model that is away or slow', () => {
     expect(unwrap(parseGameMasterConfig({}))).toEqual({
       enabled: false,
       timeoutMs: DEFAULT_GAME_MASTER_TIMEOUT_MS,
+      tools: [],
     });
   });
 });
@@ -615,7 +617,7 @@ describe('S. with no Game Master', () => {
       unwrap(
         parseGameMasterConfig({ GAME_MASTER_ENABLED: 'true', GAME_MASTER_TIMEOUT_MS: '5000' }),
       ),
-    ).toEqual({ enabled: true, timeoutMs: 5_000 });
+    ).toEqual({ enabled: true, timeoutMs: 5_000, tools: [] });
     for (const env of [
       { GAME_MASTER_ENABLED: 'yes please' },
       { GAME_MASTER_TIMEOUT_MS: '0' },
@@ -975,6 +977,7 @@ describe('the record of a turn', () => {
       'at',
       'attempts',
       'code',
+      'durationMs',
       'eventType',
       'invocationId',
       'model',

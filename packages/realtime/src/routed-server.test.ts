@@ -485,6 +485,86 @@ describe('connections coming and going', () => {
   });
 });
 
+describe('being told what happens at the listener', () => {
+  async function observed(route?: Route) {
+    const session = newSession('a');
+    const room = createRoom({ session });
+    const events: { type: string; code?: string }[] = [];
+    const errors: unknown[] = [];
+    const server = await createRoutedRealtimeServer({
+      port: 0,
+      clock,
+      route: route ?? ((sessionId) => (sessionId === 'a' ? room : 'SESSION_NOT_FOUND')),
+      onSocket: (event) => events.push(event),
+      onError: (error) => errors.push(error),
+    });
+    servers.push(server);
+    return { server, room, events, errors };
+  }
+
+  it('says when a socket opens, is given its room, and closes', async () => {
+    const { server, events } = await observed();
+    const client = await Client.open(server.port, '/sessions/a');
+    await client.join('Ada');
+    expect(events).toEqual([{ type: 'opened' }, { type: 'attached' }]);
+    client.socket.close();
+    await client.closed;
+    await until(() => events.length === 3);
+    expect(events.at(-1)).toEqual({ type: 'closed' });
+  });
+
+  it('says when a socket is refused, and with which code', async () => {
+    const { server, events } = await observed();
+    for (const path of ['/sessions/nothing', '/not-a-session']) {
+      const client = await Client.open(server.port, path);
+      await client.next();
+      await client.closed;
+    }
+    await until(() => events.filter((event) => event.type === 'closed').length === 2);
+    expect(events.filter((event) => event.type === 'refused')).toEqual([
+      { type: 'refused', code: 'SESSION_NOT_FOUND' },
+      { type: 'refused', code: 'INVALID_SESSION_PATH' },
+    ]);
+    expect(events.filter((event) => event.type === 'attached')).toEqual([]);
+    // What it is told names no address and no session.
+    expect(JSON.stringify(events)).not.toMatch(/nothing|not-a-session|127\.0\.0\.1/);
+  });
+
+  it('hands over what a failing route threw, and tells the client nothing of it', async () => {
+    const { server, errors, events } = await observed(() => {
+      throw new Error('LEAK_MARKER the store is away');
+    });
+    const client = await Client.open(server.port, '/sessions/a');
+    expect(await client.next()).toEqual({ type: 'error', code: 'SESSION_UNAVAILABLE' });
+    await client.closed;
+    expect(errors.map((error) => (error as Error).message)).toEqual([
+      'LEAK_MARKER the store is away',
+    ]);
+    expect(events.filter((event) => event.type === 'refused')).toEqual([
+      { type: 'refused', code: 'SESSION_UNAVAILABLE' },
+    ]);
+  });
+
+  it('carries on when the listeners throw', async () => {
+    const session = newSession('a');
+    const room = createRoom({ session });
+    const server = await createRoutedRealtimeServer({
+      port: 0,
+      clock,
+      route: () => room,
+      onSocket: () => {
+        throw new Error('the listener broke');
+      },
+      onError: () => {
+        throw new Error('the listener broke');
+      },
+    });
+    servers.push(server);
+    const client = await Client.open(server.port, '/sessions/a');
+    expect((await client.join('Ada')).sessionId).toBe('a');
+  });
+});
+
 describe('the routed adapter stays an adapter', () => {
   const directory = dirname(fileURLToPath(import.meta.url));
   const code = readFileSync(joinPath(directory, 'routed-server.ts'), 'utf-8').replace(

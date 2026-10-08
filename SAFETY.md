@@ -367,6 +367,35 @@ flying blind on the only metric that matters.
 
 ---
 
+## The regression suite
+
+`packages/safety/src/regression.test.ts` tests the validator on its own: no model, no provider, no
+agent, no server. It exists so that a change anywhere in the AI system cannot quietly let an
+unsafe event through.
+
+- **Every event kind.** It is a table keyed by the seven kinds of event that can come from outside
+  the engine, checked by the compiler, so a new kind cannot be added without an entry.
+- **Every game.** Each case is run against the policy of all five game definitions.
+- **Safe cases.** Places and instructions that must be allowed, including text the real model wrote.
+- **Critical hazards.** Places and instructions that must be refused in every game under every
+  combination of options, including claimed adult supervision and a requested longer time limit,
+  and however they are capitalised, padded or dressed up with reassurance.
+- **Unreadable text.** Refused, not guessed at.
+- **Malformed events.** Refused by the engine's own schema before the validator is asked.
+- **The boundary.** A timed demand is allowed at exactly the game's limit and refused one second
+  over it. Configuration can shorten the limit and cannot lengthen it.
+- **What reaches the engine.** Only an event the validator cleared: never a forged clearance,
+  never one for a different game.
+
+The kinds with no words for players and no demand (`POWER_UP`, `TIME_EXTENSION`, `ROLE_CHANGE`)
+have nothing for the validator to assess. The suite asserts that it says so, by reporting that it
+checked no fields, rather than claiming a check it did not make. What bounds those is the engine.
+
+The Game Master's golden scenarios in [AI.md](./AI.md#evaluation) then show the same refusals
+holding end to end, including after a tool call.
+
+---
+
 ## What is explicitly out of scope
 
 Being clear about the limits is part of the safety argument.

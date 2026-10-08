@@ -121,8 +121,19 @@ const flag = z
   .default('false')
   .transform((value) => value === 'true' || value === '1');
 
+const toolList = z
+  .string()
+  .default('')
+  .transform((value) =>
+    value
+      .split(',')
+      .map((name) => name.trim())
+      .filter((name) => name !== ''),
+  );
+
 const gameMasterConfigSchema = z.object({
   GAME_MASTER_ENABLED: flag,
+  GAME_MASTER_TOOLS: toolList,
   GAME_MASTER_TIMEOUT_MS: z.coerce
     .number()
     .int()
@@ -137,6 +148,12 @@ export interface GameMasterConfig {
   readonly enabled: boolean;
   /** How long one turn may wait for the model. */
   readonly timeoutMs: number;
+  /**
+   * The names of the read-only tools the Game Master is given. Empty unless
+   * asked for: with none, the model is asked exactly as it is without tools.
+   * Whether each name is a tool that exists is checked where the tools are.
+   */
+  readonly tools: readonly string[];
 }
 
 /**
@@ -150,6 +167,7 @@ export function parseGameMasterConfig(
     value === undefined || value.trim() === '' ? undefined : value.trim().toLowerCase();
   const parsed = gameMasterConfigSchema.safeParse({
     GAME_MASTER_ENABLED: blank(env.GAME_MASTER_ENABLED),
+    GAME_MASTER_TOOLS: blank(env.GAME_MASTER_TOOLS),
     GAME_MASTER_TIMEOUT_MS: blank(env.GAME_MASTER_TIMEOUT_MS),
   });
   if (!parsed.success) {
@@ -161,5 +179,56 @@ export function parseGameMasterConfig(
   return ok({
     enabled: parsed.data.GAME_MASTER_ENABLED,
     timeoutMs: parsed.data.GAME_MASTER_TIMEOUT_MS,
+    tools: parsed.data.GAME_MASTER_TOOLS,
   });
+}
+
+const errorReportingSchema = z
+  .object({
+    SENTRY_ENABLED: flag,
+    SENTRY_DSN: z.string().trim().min(1).optional(),
+    SENTRY_ENVIRONMENT: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_.-]{1,64}$/, 'must be a short plain name')
+      .default('development'),
+  })
+  .refine((value) => !value.SENTRY_ENABLED || value.SENTRY_DSN !== undefined, {
+    path: ['SENTRY_DSN'],
+    message: 'SENTRY_DSN is required when SENTRY_ENABLED is true.',
+  });
+
+/** Whether unexpected errors are reported to Sentry, and where. */
+export type ErrorReportingConfig =
+  /** Off: nothing is reported, and the Sentry SDK is not loaded. */
+  | { readonly enabled: false }
+  | { readonly enabled: true; readonly dsn: string; readonly environment: string };
+
+/**
+ * Error reporting is off unless it is switched on, and then it needs to be told
+ * where to send. A DSN that is set while reporting is off is ignored.
+ */
+export function parseErrorReportingConfig(
+  env: Readonly<Record<string, string | undefined>>,
+): Result<ErrorReportingConfig, ServerConfigError> {
+  const blank = (value: string | undefined) =>
+    value === undefined || value.trim() === '' ? undefined : value.trim();
+  const parsed = errorReportingSchema.safeParse({
+    SENTRY_ENABLED: blank(env.SENTRY_ENABLED)?.toLowerCase(),
+    SENTRY_DSN: blank(env.SENTRY_DSN),
+    SENTRY_ENVIRONMENT: blank(env.SENTRY_ENVIRONMENT),
+  });
+  if (!parsed.success) {
+    return err({
+      code: 'INVALID_CONFIGURATION',
+      // The names of the variables, and never what they were set to.
+      issues: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+    });
+  }
+  const { SENTRY_ENABLED, SENTRY_DSN, SENTRY_ENVIRONMENT } = parsed.data;
+  return ok(
+    SENTRY_ENABLED && SENTRY_DSN
+      ? { enabled: true, dsn: SENTRY_DSN, environment: SENTRY_ENVIRONMENT }
+      : { enabled: false },
+  );
 }

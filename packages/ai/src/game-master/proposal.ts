@@ -94,3 +94,48 @@ export function parseGameMasterProposal(
   if (!event.success) return err(issuesOf(event.error, 'event'));
   return ok({ rationale: wrapper.data.rationale, event: event.data });
 }
+
+/** A request to use a tool. The input is checked later, against that tool's own schema. */
+const toolRequestSchema = z
+  .object({
+    tool: z.object({ name: z.string().min(1).max(40), input: z.unknown().optional() }).strict(),
+  })
+  .strict();
+export type ToolRequest = z.infer<typeof toolRequestSchema>;
+
+/**
+ * The output schema given to the model while it may still use a tool: either a
+ * proposal, or a request for one of the named tools.
+ */
+export function stepOutputSchemaFor(
+  definition: Pick<GameDefinition, 'allowedEventKinds'>,
+  toolNames: readonly string[],
+): z.ZodType {
+  const [first, ...rest] = toolNames;
+  if (!first) return proposalOutputSchemaFor(definition);
+  const request = z
+    .object({
+      tool: z
+        .object({
+          name: z.enum([first, ...rest]),
+          input: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict();
+  return z.union([proposalOutputSchemaFor(definition), request]);
+}
+
+/**
+ * Reads a reply as a tool request, if it is one. A reply is a tool request when
+ * it is an object with a `tool` field and no `event` field; anything else is
+ * left to be read as a proposal.
+ */
+export function parseToolRequest(value: unknown): ToolRequest | null {
+  if (typeof value !== 'object' || value === null || 'event' in value || !('tool' in value)) {
+    return null;
+  }
+  const parsed = toolRequestSchema.safeParse(value);
+  // Malformed, but clearly meant as a tool request: it names no tool that exists.
+  return parsed.success ? parsed.data : { tool: { name: '(malformed)' } };
+}
