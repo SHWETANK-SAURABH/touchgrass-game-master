@@ -29,7 +29,7 @@ import { type CreateSessionError, createPersistentSessions } from './persistent-
  *
  * Saving happens in two places only. Creating a game saves its first snapshot.
  * After that, `save()` saves when it is called, and `shutdown()` saves once on
- * the way out if there is anything unsaved. `hasUnsavedChanges()` says whether
+ * the way out if there is anything unsaved. Saves are made one at a time. `hasUnsavedChanges()` says whether
  * there is, and never saves. `close()` never saves. No join, action, host command,
  * tick, leave, resume or disconnect saves anything; the room does not know a
  * store exists.
@@ -86,6 +86,10 @@ export interface PersistentServer extends HostedSession {
   /**
    * Saves the game as it is now. This is the explicit save: nothing else calls
    * it. A failure is returned and changes nothing in the running game.
+   *
+   * Saves are made one at a time. One requested while another is still going
+   * waits for it, and then saves the game as it is at that point, not as it was
+   * when the save was asked for. A save that fails does not hold up the next.
    */
   readonly save: () => Promise<Result<void, SessionPersistenceError>>;
   /**
@@ -177,7 +181,8 @@ export async function startPersistentServer(
     return err({ code: 'SERVER_NOT_STARTED', message: 'The server could not start listening.' });
   }
 
-  const save = async (): Promise<Result<void, SessionPersistenceError>> => {
+  /** One save, from capturing the state to hearing back from the store. */
+  const saveNow = async (): Promise<Result<void, SessionPersistenceError>> => {
     // Taken before the save is awaited. The game may change while the store is
     // working, and what was saved is this state, not whatever came after.
     const stateBeingSaved = hosted.session.getState();
@@ -185,13 +190,50 @@ export async function startPersistentServer(
     if (saved.ok) lastSavedState = stateBeingSaved;
     return saved;
   };
+
+  /**
+   * The saves of this server, one at a time.
+   *
+   * `pendingSaves` settles when the most recently requested save has finished,
+   * however it ended, and is undefined while no save is pending. A save
+   * requested while another is pending waits for it and only then captures the
+   * state and writes, so the store never has two writes from this server in
+   * flight, and a later save always stores a state at least as new as an earlier
+   * one. A save requested when nothing is pending starts at once.
+   *
+   * This orders the saves of one server. It does nothing about another process
+   * writing the same session.
+   */
+  let pendingSaves: Promise<void> | undefined;
+
+  const save = (): Promise<Result<void, SessionPersistenceError>> => {
+    const result = pendingSaves ? pendingSaves.then(saveNow) : saveNow();
+    // What later saves wait for. It never rejects, so one save that fails, or
+    // even throws, cannot stop the ones behind it.
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingSaves = settled;
+    void settled.then(() => {
+      if (pendingSaves === settled) pendingSaves = undefined;
+    });
+    return result;
+  };
+
+  /** Waits until no save is pending, including any requested while waiting. */
+  const savesSettled = async (): Promise<void> => {
+    while (pendingSaves) await pendingSaves;
+  };
   const hasUnsavedChanges = (): boolean => hosted.session.getState() !== lastSavedState;
 
   /**
    * Stops the realtime server and closes the store, with one save in between if
-   * asked for and needed. The store is closed whatever happens before it. If the
-   * realtime server or the store fails to close, the first such failure is
-   * thrown once everything has been attempted.
+   * asked for and needed. Saves already under way are waited for first, so the
+   * decision to save is made against what they stored, and the store is never
+   * closed while a save is pending. The store is closed whatever happens before
+   * it. If the realtime server or the store fails to close, the first such
+   * failure is thrown once everything has been attempted.
    */
   const stop = async (finalSave: boolean): Promise<Result<void, SessionPersistenceError>> => {
     let failure: { readonly error: unknown } | undefined;
@@ -201,8 +243,10 @@ export async function startPersistentServer(
       failure = { error };
     }
 
+    await savesSettled();
     let saved: Result<void, SessionPersistenceError> = ok(undefined);
     if (finalSave && hasUnsavedChanges()) saved = await save();
+    await savesSettled();
 
     try {
       await store.close?.();

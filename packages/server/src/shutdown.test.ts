@@ -510,11 +510,11 @@ describe('shutdown adds no policy beyond itself', () => {
     }
   });
 
-  it('has no timer, retry, queue or lock in the server source', () => {
+  it('has no timer, retry or revision in the server source', () => {
     const code = strip('persistent-server.ts');
-    expect(code).not.toMatch(
-      /setTimeout|setInterval|setImmediate|retry|queue|mutex|\block\b|revision/i,
-    );
+    // Saves are made one at a time by waiting on the previous one. That is a
+    // promise to wait on, not a timer, a retry or a version check.
+    expect(code).not.toMatch(/setTimeout|setInterval|setImmediate|retry|revision/i);
     // The final save is the existing save, called from one place.
     expect(code.match(/await save\(\)/g)).toHaveLength(1);
     expect(code.match(/sessions\.save\(/g)).toHaveLength(1);

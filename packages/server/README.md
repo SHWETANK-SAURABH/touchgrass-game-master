@@ -99,6 +99,21 @@ builds a snapshot or talks to MongoDB itself.
 - A failed save is returned. The running game is unchanged and stays usable.
 - Deleting a stored game does not touch a running one or its connections.
 
+**A server makes its saves one at a time.** `server.save()` never has two writes at the store
+together:
+
+- A save asked for while another is still going waits for it. Saves run in the order they were
+  asked for.
+- A waiting save stores the game as it is when it starts, not as it was when it was asked for, so a
+  later save never stores an older state than an earlier one.
+- Each caller gets the result of its own save. A save that fails does not hold up the ones behind
+  it.
+- A save asked for when none is pending starts at once, as before.
+
+This orders the saves of one server handle. It is not a lock on the stored game: two processes
+serving the same session still overwrite each other, and the last write wins. Nothing here detects
+that.
+
 Errors are the persistence lifecycle's own: `INVALID_SESSION_ID`, `SESSION_NOT_FOUND`,
 `STORAGE_ERROR`, `INVALID_SNAPSHOT`. No driver error reaches this layer.
 
@@ -175,7 +190,9 @@ await server.shutdown(); // stop gracefully, keeping the game
 | Returns                   | nothing   | the result of the final save |
 
 **`close()` is resource shutdown without persistence.** It does not save and does not look at
-whether there is anything to save. Whatever changed since the last save is discarded.
+whether there is anything to save. Whatever changed since the last save is discarded. A save that a
+caller had already asked for is allowed to finish first: neither `close()` nor `shutdown()` closes
+the store while a save is pending.
 
 **`shutdown()` is graceful, persistence-aware shutdown.** Its order is fixed:
 
@@ -185,6 +202,8 @@ realtime server stops  →  save, if there are unsaved changes  →  store close
 
 - The realtime server is stopped first, so no client message can change the game while the final
   state is being saved. The save does not begin until it has finished stopping.
+- Saves that are already under way are waited for before deciding whether anything is unsaved. If
+  one of them stored the current state, no further save is made.
 - A game with unsaved changes is saved, through the same `save()` as an explicit save.
 - A game with nothing unsaved is not saved: the store receives no save call.
 - The save happens at most once. It is never retried.

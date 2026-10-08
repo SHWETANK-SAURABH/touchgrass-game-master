@@ -522,6 +522,13 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
   game, and no token issued before the restore works.
 - **One room, one session, no registry.** A loaded session is the one the room is built around. The
   server layer keeps no table of sessions, rooms or stores.
+- **A server makes its saves one at a time (Phase 5L).** Saves on one `PersistentServer` wait for
+  the one before, so the store never has two writes from that server in flight and a later save
+  never stores an older state. A waiting save captures the game when it starts, not when it was
+  asked for. A failed save does not block the next. `shutdown()` and `close()` wait for pending
+  saves, so the store is never closed under one, and `shutdown()` decides whether to save only after
+  they have finished. This is ordering inside one process. Two processes serving the same session
+  still overwrite each other; that needs an ownership rule or a version check, and neither exists.
 - **Two ways to stop (Phase 5K).** `close()` is resource shutdown without persistence: it never
   saves, and unsaved changes are discarded. `shutdown()` is graceful and persistence-aware, in a
   fixed order: the realtime server stops, the game is saved once if `hasUnsavedChanges()` is true,
