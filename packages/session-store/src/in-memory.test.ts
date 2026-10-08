@@ -397,8 +397,11 @@ describe('errors', () => {
 describe('the boundary', () => {
   const directory = dirname(fileURLToPath(import.meta.url));
   const root = join(directory, '..', '..');
+  // The interface and the in-memory store. The MongoDB adapter is a separate
+  // entry point with its own tests; nothing here may depend on it.
+  const DATABASE_FREE = ['in-memory.ts', 'index.ts', 'store.ts'];
   const sources = readdirSync(directory)
-    .filter((name) => name.endsWith('.ts') && !name.includes('.test.'))
+    .filter((name) => DATABASE_FREE.includes(name))
     .map((name) => [name, readFileSync(join(directory, name), 'utf-8')] as const);
   const strip = (text: string): string => text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
 
@@ -485,7 +488,7 @@ describe('the boundary', () => {
     }
   });
 
-  it('depends on the session package and shared helpers only', () => {
+  it('depends on the session package and shared helpers, plus the MongoDB driver for its adapter', () => {
     const manifest = JSON.parse(readFileSync(join(directory, '..', 'package.json'), 'utf-8')) as {
       dependencies: Record<string, string>;
       devDependencies?: Record<string, string>;
@@ -493,8 +496,11 @@ describe('the boundary', () => {
     expect(Object.keys(manifest.dependencies).sort()).toEqual([
       '@touchgrass/game-session',
       '@touchgrass/shared',
+      'mongodb',
     ]);
     expect(manifest.devDependencies).toBeUndefined();
+
+    // The driver is used by the adapter alone; the files checked here import none of it.
 
     for (const [name, source] of sources) {
       const imports = [...source.matchAll(/from '([^']+)'/g)].map((match) => match[1] ?? '');

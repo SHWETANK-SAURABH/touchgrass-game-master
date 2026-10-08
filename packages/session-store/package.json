@@ -4,13 +4,15 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mongodb": "./src/mongodb.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@touchgrass/game-session": "*",
-    "@touchgrass/shared": "*"
+    "@touchgrass/shared": "*",
+    "mongodb": "^7.7.0"
   }
 }

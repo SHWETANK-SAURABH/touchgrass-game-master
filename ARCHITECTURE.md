@@ -259,6 +259,7 @@ order give the same roles on any host.
 | Session snapshot and validated restore            | Phase 5E: plain data out, validated in                           |
 | Session store interface, in-memory reference      | Phase 5F: `@touchgrass/session-store`; not durable               |
 | Explicit load / save / delete of a session        | Phase 5G: `@touchgrass/session-persistence`; nothing calls it    |
+| MongoDB adapter for session snapshots             | Phase 5H: `MongoSessionStore`; not wired to anything             |
 | WebSocket transport around one session            | Phase 5C: `@touchgrass/realtime`, development only               |
 | Resume, lobby leave, host role over the transport | Phase 5D: bearer tokens held in the room; not authentication     |
 | Session registry, authentication, persistence     | Later                                                            |
@@ -444,10 +445,38 @@ interface SessionStore {
 - **Bearer tokens are not in a snapshot,** so a store never holds them and they do not survive a
   restore.
 
-The one implementation is `InMemorySessionStore`. It is for tests, local development, and as the
-reference for how a store behaves. It is not persistence: it holds snapshots in the memory of one
-process and loses them when that process stops. A MongoDB store is deliberately deferred. There is no
-database, file, timer or background save anywhere in the project.
+There are two implementations.
+
+- `InMemorySessionStore` is for tests, local development, and as the reference for how a store
+  behaves. It is not persistence: it holds snapshots in the memory of one process and loses them when
+  that process stops.
+- `MongoSessionStore` (Phase 5H) keeps snapshots in MongoDB through the official driver. It is
+  imported from `@touchgrass/session-store/mongodb`, and that file is the only place the driver is
+  used: the interface names no driver type, and every driver failure becomes `STORAGE_ERROR` with a
+  fixed message.
+
+```
+                 SessionStore
+                /            \
+InMemorySessionStore     MongoSessionStore
+```
+
+The MongoDB adapter in short:
+
+- **One session is one document:** `{ _id: sessionId, version, state }`. The id is the key, so no
+  index is added and `_id` never appears in a snapshot.
+- **Snapshot data only.** No tokens, connections or room state. It does not create or restore a
+  session and does not validate a game; the lifecycle functions and `restoreGameSession` do.
+- **Save is a single upsert, and the last successful save wins.** There is no revision check, lock,
+  transaction or retry; the driver's own automatic retry is switched off.
+- **The store owns its connection.** Nothing connects on import or construction. The first operation
+  creates one client, kept until `close()`, after which the store refuses every operation.
+- **Both stores run the same contract tests.** The MongoDB adapter runs them without a database,
+  over documents held as BSON bytes, and against a real server only when `MONGODB_TEST_URI` is set.
+
+Nothing creates a `MongoSessionStore` outside its tests. No MongoDB instance is provisioned, no
+realtime action saves to one, and no deployment configuration mentions it. There is no file, timer or
+background save anywhere in the project.
 
 **The persistence lifecycle (Phase 5G).** `@touchgrass/session-persistence` is the application-level
 code that calls a session and a store, which do not call each other.
@@ -664,9 +693,9 @@ Decisions already fixed by the engine design:
 
 ## 8. Data architecture
 
-> **Planned — later phase** for MongoDB and Redis. Today every piece of state is in-process. The
-> interface a MongoDB store will implement exists (`SessionStore`, §7); only an in-memory reference
-> implements it.
+> **Planned — later phase** for Redis and for anything that uses MongoDB. Today every piece of state
+> is in-process. A MongoDB adapter for session snapshots exists (`MongoSessionStore`, §7) and is not
+> wired to anything; the input log and audit trail described below are not built.
 
 ```mermaid
 flowchart LR
@@ -849,20 +878,21 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                       | Status       |
-| ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
-| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B) | **Complete** |
-| Phase 4 | Deterministic safety validator between domain validation and the engine                                     | **Complete** |
-| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                 | **Complete** |
-| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                  | **Complete** |
-| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
-| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
-| 5E      | Session snapshot and validated restore: the boundary persistence will use                                   | **Complete** |
-| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                             | **Complete** |
-| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
-| Later   | Session registry, authentication and TLS, Redis, Game Master during a game, persistence, deployment         | Planned      |
+| Phase   | Scope                                                                                                        | Status       |
+| ------- | ------------------------------------------------------------------------------------------------------------ | ------------ |
+| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                 | **Complete** |
+| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable  | **Complete** |
+| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B)  | **Complete** |
+| Phase 4 | Deterministic safety validator between domain validation and the engine                                      | **Complete** |
+| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                  | **Complete** |
+| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                   | **Complete** |
+| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                         | **Complete** |
+| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                        | **Complete** |
+| 5E      | Session snapshot and validated restore: the boundary persistence will use                                    | **Complete** |
+| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                              | **Complete** |
+| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                      | **Complete** |
+| 5H      | MongoDB adapter for the SessionStore interface; not wired to anything                                        | **Complete** |
+| Later   | Wiring persistence into the server, session registry, authentication and TLS, Redis, Game Master, deployment | Planned      |
 
 **Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
 framework ahead of the code that needs it produces a dead dependency.

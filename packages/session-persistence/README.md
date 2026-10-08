@@ -13,9 +13,10 @@ A `GameSession` owns a running game and does not know stores exist. A `SessionSt
 and does not know what a game is. This package is the code that calls both, and it does so only when
 a caller asks.
 
-**This is not production persistence.** The only store that exists is `InMemorySessionStore`, which
-loses everything when the process stops. A saved session is exactly as durable as the store it was
-saved to. MongoDB is deliberately deferred.
+**A saved session is exactly as durable as the store it was saved to.** `InMemorySessionStore` loses
+everything when the process stops. `MongoSessionStore` keeps snapshots in MongoDB. These functions
+work the same with either and cannot tell them apart. Nothing in the project creates a MongoDB store
+or calls these functions yet.
 
 ```ts
 import { InMemorySessionStore } from '@touchgrass/session-store';
@@ -117,7 +118,7 @@ caller's decision, and no caller in this project does so yet.
 
 ## Not here
 
-MongoDB, Redis, autosave, retries, transactions, version checks between saves, locks, expiry,
+Redis, autosave, retries, transactions, version checks between saves, locks, expiry,
 migrations, an event log, and restoring a session when a client connects. Those are later decisions.
 
 ## Dependencies

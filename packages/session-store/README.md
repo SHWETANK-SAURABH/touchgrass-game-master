@@ -1,10 +1,16 @@
 # @touchgrass/session-store
 
 The persistence boundary for game sessions: an interface for saving and loading session snapshots,
-and an in-memory implementation of it.
+and two implementations of it.
 
-**No database is connected.** The only implementation keeps snapshots in the memory of one process.
-It is not durable. A MongoDB store is deliberately deferred to a later phase.
+| Implementation         | Keeps snapshots in        | For                                        |
+| ---------------------- | ------------------------- | ------------------------------------------ |
+| `InMemorySessionStore` | The memory of one process | Tests, local development, the reference    |
+| `MongoSessionStore`    | A MongoDB collection      | Persistence, once something is wired to it |
+
+**Nothing in this project uses a database yet.** The MongoDB adapter exists and is tested, but no
+server, script or application code creates one, no MongoDB instance is provisioned, and nothing saves
+automatically.
 
 ```
 GameSession → snapshot() → SessionStore.save(snapshot)
@@ -102,11 +108,100 @@ For tests, for local development, and as the reference for how a store behaves.
 
 **It is not production persistence.** Everything in it is gone when the process stops.
 
+## MongoSessionStore
+
+An adapter that keeps snapshots in MongoDB, using the official `mongodb` driver. It implements the
+same `SessionStore` interface and passes the same contract tests as the in-memory store, so code
+that uses a store cannot tell which one it has.
+
+It is imported from its own entry point, so nothing else loads the driver:
+
+```ts
+import { createMongoSessionStore } from '@touchgrass/session-store/mongodb';
+
+const store = createMongoSessionStore({
+  uri: 'mongodb://localhost:27017', // from configuration; never hard-coded or logged
+  databaseName: 'touchgrass',
+  collectionName: 'sessions', // optional; this is the default
+});
+
+await saveSession(store, session); // the same lifecycle functions as with any store
+await store.close();
+```
+
+**It is persistence only.** It stores a snapshot, returns one and deletes one. It does not create or
+restore a `GameSession`; `@touchgrass/session-persistence` does that, by passing a loaded snapshot to
+`restoreGameSession`. It does not validate the game either: a malformed but storable snapshot is
+kept, and refused later on restore.
+
+**One session is one document.**
+
+```
+{ _id: <session id>, version: <snapshot version>, state: <GameState> }
+```
+
+- The session id is the document's `_id`. MongoDB already keeps `_id` unique and indexed, so no
+  other index is created and the id is not stored twice.
+- `_id` never appears in a loaded snapshot, which has `sessionId` again.
+- The document holds the snapshot and nothing else. Player tokens, the host token and connections
+  are not in a snapshot and are not stored. Fields that are not part of a snapshot are dropped.
+- There is one collection. There is no collection for events, players, tokens or rooms.
+
+**Operations.**
+
+- `save` replaces the document with that id, or inserts it if there is none: a single upsert. The
+  last successful save wins. There is no revision check, lock or transaction.
+- `load` finds the document by id and returns a new, frozen, plain snapshot, or `null`.
+- `delete` removes the document by id. Deleting one that is not there succeeds.
+- Each operation is attempted once. The driver's own automatic retry of reads and writes is switched
+  off, and the adapter never retries.
+
+**Errors.** Whatever the driver throws becomes `STORAGE_ERROR` with a fixed message. The driver's
+error, with its name, stack, host and connection string, does not leave the adapter.
+
+**Connection.**
+
+- Creating a store does nothing: no client is made and no connection is opened, so importing the
+  module or constructing a store reaches no network and cannot fail.
+- The first operation creates one client, which the store keeps and reuses for every operation.
+- Each store owns its own client. Nothing is shared between stores or kept at module level.
+- `close()` lets go of the connection. Afterwards every operation returns `STORAGE_ERROR`; a closed
+  store does not reconnect. Closing twice, or without ever having connected, does nothing.
+
+**Limits.**
+
+- A MongoDB document cannot exceed 16 MB. A snapshot holds a game's whole history, which is not
+  bounded, so a long enough game would fail to save.
+- The driver waits up to its own default (30 seconds) for a server that cannot be reached before an
+  operation fails. No shorter limit is configured here; it can be set in the connection string.
+- The connection string is used as given. Encryption and credentials are whatever it specifies.
+- Ids are arbitrary strings, and player ids appear as object keys in a game's history. Keys that
+  contain a dot or start with a dollar sign are stored exactly as they are and come back unchanged.
+  The adapter never renames or escapes a key. This relies on the server accepting such field names,
+  which MongoDB has done since version 5.0 and which is tested against 8.0. A server that refuses
+  them fails the save with `STORAGE_ERROR`, and nothing is stored in an altered form.
+
+### Tests
+
+The adapter's tests run without a database: they use a stand-in collection that keeps documents as
+BSON bytes, encoded and decoded with the driver's own BSON library.
+
+The same contract suite also runs against a real server, but only when asked:
+
+```
+MONGODB_TEST_URI=mongodb://127.0.0.1:27017 npm test
+```
+
+Without `MONGODB_TEST_URI` those tests are skipped, so `npm run verify` needs no MongoDB. With it,
+they use a database with a random name and drop it afterwards.
+
 ## Not here
 
-MongoDB, Redis, files, retries, locking, expiry, migrations, autosave, a session registry, and any
-record of events beyond the history already inside the game state. Those are later decisions.
+Redis, files, retries, locking, revision checks, expiry, migrations, autosave, a session registry,
+and any record of events beyond the history already inside the game state. Those are later
+decisions.
 
 ## Dependencies
 
-`@touchgrass/game-session` (for the snapshot type) and `@touchgrass/shared`.
+`@touchgrass/game-session` (for the snapshot type), `@touchgrass/shared`, and `mongodb`, which only
+the adapter imports.

@@ -41,9 +41,9 @@ AI proposals and player actions are two separate inputs to the deterministic eng
 > Phase 5E lets a session describe itself as a snapshot and be rebuilt from one after validation,
 > which is the boundary a future persistence layer will use. Phase 5F defines that layer's interface
 > (`SessionStore`) with an in-memory reference implementation. Phase 5G adds the explicit
-> operations that connect the two: load, save and delete a session. It is not durable, nothing saves
-> automatically, a failed save leaves the running game ahead of what is stored, and no database is
-> connected.
+> operations that connect the two: load, save and delete a session. Phase 5H adds a MongoDB adapter
+> for that interface. Nothing creates one yet: no database is provisioned or connected, nothing saves
+> automatically, and a failed save leaves the running game ahead of what is stored.
 >
 > Phase 5D adds lifecycle and control to that transport. A player who drops can resume on a new
 > connection with a token the server gave them at join; a player can leave before the game starts;
@@ -134,7 +134,7 @@ packages/
   game-definitions/       GameDefinition schema + the five games, as data
   game-engine/            Deterministic engine: actions, events, time, scoring, winners
   game-session/           In-memory holder of one game's authoritative state
-  session-store/          Persistence interface for session snapshots; in-memory reference only
+  session-store/          Persistence interface for session snapshots; in-memory and MongoDB adapters
   session-persistence/    Explicit load / save / delete between a session and a store
   realtime/               WebSocket transport around one game session
   safety/                 Hazard taxonomy, policy, and the deterministic safety validator

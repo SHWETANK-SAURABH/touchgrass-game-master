@@ -44,7 +44,7 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json(
     {
       status: model.ok ? 'ok' : 'degraded',
-      phase: 'phase-5g-persistence-lifecycle',
+      phase: 'phase-5h-mongodb-session-store',
       checkedAt: new Date().toISOString(),
       durationMs: Math.round(performance.now() - startedAt),
       model,
