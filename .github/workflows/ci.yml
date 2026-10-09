@@ -1,0 +1,87 @@
+name: CI
+
+# Verifies every pull request to main and every push to main.
+#
+# It runs the same commands a contributor runs locally. It needs no model
+# runtime, no Sentry project and no secret, and it deploys nothing.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Read the code, and nothing else. No job here is given a secret.
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request replaces the run before it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # The version the project pins, in .nvmrc.
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        run: npm ci
+
+      # Format check, lint, typecheck and the whole deterministic test suite.
+      # Tests that need MongoDB or a live model skip themselves here.
+      - name: Verify
+        run: npm run verify
+
+      - name: Build the web app
+        run: npm run build
+
+      - name: Build the production game server
+        run: npm run build:server
+
+  mongo:
+    name: MongoDB integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A throwaway database for this job only. It has no credentials because it
+    # holds nothing and is reachable only from this runner.
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval \"db.adminCommand('ping').ok\""
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        run: npm ci
+
+      # The same test command, with the variable that turns the MongoDB
+      # integration tests on. They use databases with random names and drop them.
+      - name: Test against MongoDB
+        run: npm test
+        env:
+          MONGODB_TEST_URI: mongodb://127.0.0.1:27017

@@ -83,6 +83,27 @@ A pull request should say what changed and why, and how you tested it. Before yo
 
 ---
 
+### What CI checks
+
+Every pull request to `main`, and every push to `main`, is checked by GitHub Actions
+(`.github/workflows/ci.yml`). It runs the commands you can run yourself, on Linux with the Node
+version in `.nvmrc`, from a clean `npm ci`:
+
+| Job                       | Runs                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| Verify and build          | `npm run verify`, then `npm run build` and `npm run build:server`              |
+| MongoDB integration tests | `npm test` with `MONGODB_TEST_URI` set, against a MongoDB it starts for itself |
+
+**Before you open a pull request, run `npm run verify` locally.** If it passes on your machine, the
+first job almost always passes too. You do not need MongoDB to contribute: the second job runs the
+MongoDB tests for you.
+
+CI never runs the tests that need a live model (`npm run ai:live`), never contacts Sentry, uses no
+secrets and deploys nothing. Those tests stay a local, optional step; see
+[Optional tests](#optional-tests).
+
+---
+
 ## How the code is organised
 
 ```
