@@ -25,7 +25,7 @@ import { codeOf, unwrap } from './test-support';
  */
 
 const ADMIN_TOKEN = 'admin-token-for-tests-only-0123456789abcdef';
-const URI = 'mongodb://admin:hunter-two@db.example.invalid:27017';
+const URI = 'mongodb://LEAK_MARKER_USER:LEAK_MARKER_VALUE@example-host.invalid:27017';
 const TOKEN_KEY = Buffer.alloc(32, 7).toString('base64');
 
 function config(more: Record<string, string> = {}): ProductionConfig {
@@ -215,7 +215,7 @@ describe('health', () => {
       }),
     );
     expect(everything.join('')).not.toMatch(
-      /hunter-two|example\.invalid|mongodb|admin-token|touchgrass|x-powered-by|stack|at \w+ \(/i,
+      /LEAK_MARKER|example-host\.invalid|mongodb|admin-token|touchgrass|x-powered-by|stack|at \w+ \(/i,
     );
   });
 });
@@ -631,7 +631,9 @@ describe('the production configuration', () => {
       SESSION_TOKEN_KEY: TOKEN_KEY,
       SERVER_PORT: 'x',
     });
-    expect(JSON.stringify(bad)).not.toMatch(/hunter-two|admin-token-for-tests|BwcHBwc/);
+    expect(JSON.stringify(bad)).not.toMatch(
+      /LEAK_MARKER|example-host|admin-token-for-tests|BwcHBwc/,
+    );
 
     const summary = summarizeProductionConfig(config({ SERVER_PORT: '3001' }));
     expect(summary).toMatchObject({
@@ -639,7 +641,9 @@ describe('the production configuration', () => {
       tokenKeyConfigured: true,
       gameMaster: false,
     });
-    expect(JSON.stringify(summary)).not.toMatch(/hunter-two|example\.invalid|admin-token|BwcHBwc/);
+    expect(JSON.stringify(summary)).not.toMatch(
+      /LEAK_MARKER|example-host\.invalid|admin-token|BwcHBwc/,
+    );
     expect(Object.keys(summary)).not.toContain('adminToken');
   });
 

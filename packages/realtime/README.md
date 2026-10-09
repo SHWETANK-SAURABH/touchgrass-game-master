@@ -1,14 +1,19 @@
 # @touchgrass/realtime
 
-A WebSocket transport around one game session.
+The WebSocket transport: a room around one game session, and listeners that put sockets in rooms.
 
 It connects sockets to a `GameSession` (`@touchgrass/game-session`): it reads a client's message,
 works out who that connection is, hands the request to the session, and sends the authoritative
 result to everyone in the game. It holds no game rules and no game state.
 
-**This is a development-stage boundary.** One server holds one game. It uses bearer tokens instead
-of authentication, over an unencrypted socket, and it is not deployed anywhere. See
-[Security limits](#security-limits) and [What it is not](#what-it-is-not).
+There are two listeners. `createRealtimeServer` serves one room, for development.
+`createRoutedRealtimeServer` serves many rooms from one port, choosing by the address a socket
+connects to; the production game server is built on it (see
+[Many rooms behind one listener](#many-rooms-behind-one-listener)).
+
+**It authenticates nobody.** It uses bearer tokens over an unencrypted socket, and expects TLS to
+be ended by a reverse proxy. See [Security limits](#security-limits) and
+[What it is not](#what-it-is-not).
 
 ```ts
 import { createHostedGame, createRealtimeServer } from '@touchgrass/realtime';
@@ -308,9 +313,11 @@ the session again means making a new room.
 - **No safety check on display names.** They are free text shown to other players.
 - **No handling of a tagger or seeker removed mid-game.** The host can do it; the game carries on
   without one.
-- **Not deployed.** Next.js cannot accept a WebSocket upgrade in a route handler, so this needs its
-  own process or a custom server; neither exists. The Docker image does not start it.
-- **Not durable.** State and tokens are in one process's memory. A restart ends the game.
+- **Not a server you deploy by itself.** Next.js cannot accept a WebSocket upgrade in a route
+  handler, so the transport runs in its own process: the game server in `@touchgrass/server`, which
+  uses the routed listener here. See [DEPLOYMENT.md](../../DEPLOYMENT.md).
+- **Not durable by itself.** A room and its tokens are in one process's memory. Keeping a game
+  across a restart is the server package's job.
 - **Not connected to the Game Master.** The room does not know one exists. It offers trusted
   server code two things a Game Master integration uses: `applyEvent`, and `onUpdate`.
 

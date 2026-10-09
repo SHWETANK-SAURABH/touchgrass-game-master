@@ -17,8 +17,8 @@ import {
   toReportableError,
 } from './reporting';
 
-const TOKEN = 'kJ8sP2mQ9xR4tV7wY1zA3bC5dE6fG8hJ0kL2mN4pQ6r';
-const URI = 'mongodb://admin:hunter-two@db.example.invalid:27017/touchgrass';
+const TOKEN = 'LEAK_MARKER_not_a_real_token_0123456789abcdef';
+const URI = 'mongodb://LEAK_MARKER_USER:LEAK_MARKER_VALUE@example-host.invalid:27017/touchgrass';
 
 /** A reporter that keeps what it was given. */
 function recordingReporter() {
@@ -167,7 +167,7 @@ describe('what leaves the process in a report', () => {
     expect(safe.message).toBe('bad token [redacted] for [address]');
     const everything = JSON.stringify({ ...safe, message: safe.message, stack: safe.stack });
     expect(everything).not.toContain(TOKEN);
-    expect(everything).not.toContain('hunter-two');
+    expect(everything).not.toContain('LEAK_MARKER_VALUE');
     // Nothing that was attached to the original came across.
     expect(Object.keys(safe).filter((key) => key !== 'name')).toEqual([]);
     expect(safe.cause).toBeUndefined();
@@ -339,7 +339,7 @@ describe('the observer', () => {
     ]);
     const line = lines.find((entry) => entry.msg === 'unexpected error');
     expect(line).toMatchObject({ level: 'error', area: 'game_master', stage: 'turn' });
-    expect(JSON.stringify(lines)).not.toMatch(/LEAK_MARKER|hunter-two/);
+    expect(JSON.stringify(lines)).not.toMatch(/LEAK_MARKER|example-host/);
     expect(JSON.stringify(lines)).not.toContain(TOKEN);
   });
 

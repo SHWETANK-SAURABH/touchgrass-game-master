@@ -100,8 +100,8 @@ export type GameSafetyProfile = z.infer<typeof gameSafetyProfileSchema>;
  * Game-specific instruction fragments for the Game Master prompt.
  *
  * Kept beside the rules rather than inside the agent, so a new game ships its own
- * voice and its own list of things never to suggest. The agent itself arrives in a
- * later phase; this is the content it will assemble.
+ * voice and its own list of things never to suggest. The Game Master is shown
+ * this with every request.
  */
 export const gameMasterGuidanceSchema = z.object({
   /** One or two sentences describing the Game Master persona for this game. */

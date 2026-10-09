@@ -1,8 +1,16 @@
 # Architecture
 
-> Phase 1 (foundation) is implemented. Sections describing later phases are marked **planned** and
-> say what exists today. Nothing in this document describes code that is not in the repository
-> unless it carries that marker.
+> **Every phase of the [roadmap](#13-roadmap) is implemented.** This document describes the code as
+> it is. Where a section still shows a longer-term design that has not been built (Redis, a hosted
+> platform, a GPU host, an input log), it says **not built** next to it.
+>
+> In one paragraph: a pure, deterministic engine runs the games. A single-process game server holds
+> every loaded session in memory, serves players over WebSocket at `/sessions/<sessionId>`, keeps
+> snapshots in MongoDB, lets players reconnect, and evicts unused sessions. A Game Master, which is
+> Gemma behind a Mastra agent, proposes events that are schema-checked, legality-checked and
+> safety-checked before the engine applies them. It may use read-only tools. An evaluation harness,
+> metrics, structured logs and optional Sentry reporting sit around it. The server ships as one
+> container.
 
 ---
 
@@ -96,7 +104,8 @@ flowchart TD
     Safety -- allow --> Engine
 
     Engine["Game engine<br/>pure reducer"] --> NewState["New session state<br/>+ append-only log"]
-    NewState --> Broadcast["Realtime broadcast<br/><i>planned — later phase</i>"]
+    NewState --> Broadcast["Realtime broadcast<br/>to that session's room"]
+    Broadcast --> Saved["Saved to MongoDB"]
     Broadcast --> Players["Players act outdoors"]
 ```
 
@@ -113,10 +122,10 @@ Three properties hold at every arrow:
 
 ## 4. Agent architecture
 
-> **Status (Phase 4):** the Game Master returns proposals, and a proposal can be handed off: the
-> engine validates it against the game, the safety validator checks it against the game's safety
-> policy, and the engine then applies it. Nothing in the app calls the Game Master during a game.
-> See [AI.md](./AI.md).
+> **Status:** the Game Master takes part in live games. The game server asks it for one proposal
+> when a round begins; the engine validates the proposal against the game, the safety validator
+> checks it against the game's safety policy, and the engine then applies it. It may use two
+> read-only tools. It is off by default. See [AI.md](./AI.md).
 
 An "agent" in this project is narrow and deliberately unglamorous: a component that observes game
 state, decides whether to act, and emits a structured proposal into a validation pipeline. It has no
@@ -330,12 +339,15 @@ not a guarantee. [SAFETY.md](./SAFETY.md) lists what it cannot do.
 
 ## 7. Realtime architecture
 
-> **Status (Phase 5D).** Four layers exist: the engine's command boundary (5A), an in-memory
-> holder of one game's state (5B), a WebSocket transport around one such holder (5C), and
-> lifecycle and control on that transport (5D): resume, leave, and a host role. The transport is for
-> development: one game per server, bearer tokens instead of authentication, an unencrypted socket,
-> no automatic time, and no production deployment. Redis, persistence and a browser client do not
-> exist.
+> **Status.** Multiplayer is implemented, in one process. From the bottom up: the engine's command
+> boundary, an in-memory holder of one game's state, a WebSocket room around it with resume, leave
+> and a host role, a session registry that holds many games, one listener that routes each socket
+> to its session by address, reconnection across a reload, eviction of unused sessions, MongoDB
+> persistence, and a production entry point. This section was written as those layers were added,
+> and keeps the labels of the internal steps (5A to 5P) because the reasoning is attached to them.
+>
+> What it still is not: there is no player authentication (bearer tokens only), no TLS in the
+> server, no automatic clock, no Redis, no second process, and no browser game client.
 
 The function at the bottom, which everything above it calls:
 
@@ -570,7 +582,7 @@ SAVE     only when asked:  server.save() → saveSession → MongoSessionStore
     connections and an unloaded handle can no longer change its game through the room.
   - **Isolation is per room.** Connections, tokens, the host role and broadcasts belong to one
     room. Sessions share the listener and the store and nothing else; there is no lock across them.
-  - **Still development-stage.** No authentication: knowing a session id is enough to connect, and
+  - **Limits.** No authentication: knowing a session id is enough to connect, and
     connecting loads a stored session. No automatic time, and one process only.
 - **Reconnect is `resume` (Phase 5O).** A player who lost their socket connects to the same
   address and sends the existing `resume` message with their token. No message was added.
@@ -791,8 +803,9 @@ allow-list, and neither can reach `tick`.
 
 - `createHostedGame(command, ctx)` makes the session, the room and a host token together and returns
   them to its caller. `createRealtimeServer({ room, port, clock })` serves that one room.
-- There is no session registry and no lookup: nothing in a URL or a message selects a game, and the
+- This single-room listener has no lookup: nothing in a URL or a message selects a game, and the
   join code is checked against that one game. Whoever holds the returned object holds the game.
+  Serving many games is the session registry and the routed listener, described further down.
 
 **Capabilities, not authentication.** The room issues two kinds of random secret (32 bytes each):
 
@@ -910,9 +923,10 @@ Decisions already fixed by the engine design:
 
 ## 8. Data architecture
 
-> **Planned — later phase** for Redis and for the input log and audit trail below. What exists is
-> narrower: session snapshots can be kept in MongoDB (`MongoSessionStore`, §7), and the development
-> server saves one when a game is created and again whenever it is told to.
+> **Partly built.** What exists: one snapshot per session in MongoDB (`MongoSessionStore`, §7),
+> saved when a session is created, evicted, shut down, after a Game Master event, and on request.
+> **Not built:** Redis, and the input log and stored audit trail described below. The Game Master's
+> turn records are kept in memory and logged, not stored.
 
 ```mermaid
 flowchart LR
@@ -921,11 +935,11 @@ flowchart LR
         Hazards["Hazard taxonomy<br/>+ policy derivation"]
     end
 
-    subgraph Hot["Hot — later phase"]
+    subgraph Hot["Hot — not built"]
         R[("Redis<br/>live GameState<br/>join-code → game")]
     end
 
-    subgraph Durable["Durable — later phase"]
+    subgraph Durable["Durable — snapshots only; the log and audit trail are not built"]
         M[("MongoDB Atlas<br/>input log, completed sessions,<br/>safety verdict audit trail")]
     end
 
@@ -1120,27 +1134,46 @@ field. Both are bounded, and retries are capped at `MODEL_MAX_RETRIES`.
 
 ## 13. Roadmap
 
-| Phase   | Scope                                                                                                       | Status       |
-| ------- | ----------------------------------------------------------------------------------------------------------- | ------------ |
-| Phase 1 | Monorepo, model abstraction, game catalogue, hazard taxonomy                                                | **Complete** |
-| Phase 2 | Deterministic game engine: lifecycle, time, actions, events, scoring, winners; Tag and Hide & Seek playable | **Complete** |
-| Phase 3 | Game Master: local Gemma + Mastra returning proposals (3A); state-aware validation and engine hand-off (3B) | **Complete** |
-| Phase 4 | Deterministic safety validator between domain validation and the engine                                     | **Complete** |
-| 5A      | Deterministic multiplayer command boundary: client intents, actor authority, action outcome                 | **Complete** |
-| 5B      | In-memory authoritative session holder: one state per game, sequential, replace on success                  | **Complete** |
-| 5C      | WebSocket transport around one session: envelopes, server-minted identity, broadcast                        | **Complete** |
-| 5D      | Lifecycle and control on the transport: resume, lobby leave, host role, bearer tokens                       | **Complete** |
-| 5E      | Session snapshot and validated restore: the boundary persistence will use                                   | **Complete** |
-| 5F      | Persistence adapter boundary: SessionStore interface and an in-memory reference                             | **Complete** |
-| 5G      | Application-level persistence lifecycle: explicit load, save and delete                                     | **Complete** |
-| 5H      | MongoDB adapter for the SessionStore interface                                                              | **Complete** |
-| 5I      | Persistent server: create, load, explicit save and shutdown around one game                                 | **Complete** |
-| Later   | Save cadence, authentication and TLS, token persistence, Redis, stored audit, deployment                    | Planned      |
+Every phase is complete.
 
-**Mastra was installed in Phase 3A, with the agent that uses it**, not before. Installing a
-framework ahead of the code that needs it produces a dead dependency.
+| Phase | Scope                | Status       | What it is in the code                                                                                    |
+| ----- | -------------------- | ------------ | --------------------------------------------------------------------------------------------------------- |
+| 0     | Architecture         | **Complete** | The monorepo, the package boundaries, the model abstraction, the game catalogue, the hazard taxonomy      |
+| 1     | Game engine          | **Complete** | The deterministic engine: lifecycle, time, actions, events, scoring, winners. Tag and Hide & Seek         |
+| 2     | Gemma + Ollama       | **Complete** | `ModelProvider` with Ollama and OpenAI-compatible adapters; local `gemma3:4b`                             |
+| 3     | Mastra agent         | **Complete** | The Game Master: one agent, structured proposals, a repair attempt, the hand-off to the engine            |
+| 4     | Safety pipeline      | **Complete** | The deterministic safety validator between engine legality and engine application                         |
+| 5     | Multiplayer          | **Complete** | Rooms, the wire protocol, host role, the session registry, routed WebSocket, reconnect, eviction          |
+| 6     | Mongo + memory       | **Complete** | Session snapshots in MongoDB with validated restore. The Game Master has no memory of its own (see below) |
+| 7     | Tools                | **Complete** | Two read-only Game Master tools, checked and run by the application                                       |
+| 8     | Eval + Sentry        | **Complete** | The evaluation harness, golden scenarios, the safety regression suite, metrics, logs, optional Sentry     |
+| 9     | Deployment           | **Complete** | The production entry point, health and readiness, graceful shutdown, the server image, a Compose stack    |
+| 10    | Hacktoberfest polish | **Complete** | Documentation, the contributor guide, the demo script                                                     |
 
-The same reasoning explains why `realtime/` did not exist until Phase 5C and why there is still no
-`database/` package. The suggested structure listed them; creating empty directories to match a
-diagram would have made the architecture look complete while being less honest than a documented
-gap.
+**How the work was actually split.** The numbers above are the plan's. The work was done in smaller
+steps, whose labels still appear in section 7 and in the commit history: a foundation step, the
+engine, the Game Master (3A, 3B), the safety validator, then multiplayer and persistence together
+as 5A to 5P (the command boundary, the session holder, the WebSocket room, host control, snapshots,
+the store interface, the persistence lifecycle, the MongoDB adapter, the persistent server, dirty
+tracking, shutdown, save ordering, the registry, routing, reconnect, eviction), then the Game
+Master in live games, tools with evaluation and observability, and deployment.
+
+**"Memory" in phase 6.** What is remembered is the game: its whole state and history, in MongoDB,
+restored exactly. The Game Master itself is stateless. Each turn it is shown the current game and
+the last ten history entries, and it can read further back with the `game_history` tool. There is
+no separate agent memory and no vector store.
+
+**Not built, and not planned as a phase:**
+
+| Not built                            | Why it matters                                                      |
+| ------------------------------------ | ------------------------------------------------------------------- |
+| A browser game client                | Games are played over the protocol; there is no UI to play in       |
+| Three of the five games              | Ice & Fire, Treasure Hunt and Nature Challenge are definitions only |
+| Player authentication, TLS           | Tokens are bearer capabilities; TLS belongs to a reverse proxy      |
+| Redis, more than one process         | Every session is in one process's memory                            |
+| A periodic save, an automatic clock  | Saves and time both happen only when something asks                 |
+| A stored audit trail, token rotation | Turn records are in memory; a token lasts as long as its player     |
+
+**Dependencies arrive with the code that uses them.** Mastra was installed with the agent, `ws` with
+the transport, the MongoDB driver with its adapter, Sentry with its adapter. There is no `database/`
+package and no empty directory that exists to match a diagram.

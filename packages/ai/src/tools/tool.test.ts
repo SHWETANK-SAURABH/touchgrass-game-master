@@ -436,7 +436,9 @@ describe('K. the Game Master with tools', () => {
       inputSchema: z.object({}).strict(),
       outputSchema: z.unknown(),
       execute: () => {
-        throw new Error('LEAK_MARKER at C:\\secret\\path with mongodb://user:pw@host');
+        throw new Error(
+          'LEAK_MARKER at C:\\secret\\path with mongodb://LEAK_MARKER@example-host.invalid',
+        );
       },
     });
     const errors: string[] = [];

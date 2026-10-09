@@ -353,8 +353,8 @@ not include the proposal's text, the verdict's violations, or the rationale, and
 the development server prints it. A rejected proposal changes nothing in the game, is not broadcast
 and is not saved.
 
-The full verdict is still returned only to the caller of the hand-off. A later phase should store,
-per session:
+The full verdict is still returned only to the caller of the hand-off. **Not built:** storing, per
+session:
 
 - every event the model proposed
 - the verdict each one received, with its violations and `policyVersion`

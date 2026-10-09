@@ -52,8 +52,9 @@ export const serverEnvSchema = z
     MODEL_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
     MODEL_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.8),
 
-    // --- reserved for later phases ----------------------------------------
-    // Optional until the phase that consumes them lands. See ARCHITECTURE.md.
+    // --- not read by the web app ------------------------------------------
+    // The game server validates MONGODB_URI and SENTRY_DSN itself, in
+    // packages/server. Nothing reads REDIS_URL: Redis is not built.
     MONGODB_URI: z.string().min(1).optional(),
     REDIS_URL: z.string().min(1).optional(),
     SENTRY_DSN: z.string().min(1).optional(),

@@ -12,10 +12,13 @@ It is where four existing pieces meet. Each keeps its own job.
 | `Room` (realtime)                  | Connections and bearer tokens                    |
 | This package                       | Starting them, explicit saves, and shutting down |
 
-**This is a development-stage server.** `startPersistentServer` serves one game from one listener.
-`startSessionServer` serves many games from one listener, through a
-[session registry](#many-games-in-one-process). There is no authentication, the socket is
-unencrypted, and it is not deployed anywhere.
+There are three ways to run it. `startPersistentServer` serves one game from one listener, for
+development. `startSessionServer` serves many games from one listener, through a
+[session registry](#many-games-in-one-process). `startProductionServer` is that with health
+checks, admin endpoints and a bounded shutdown: [the production entry point](#the-production-entry-point).
+
+In every form it is one process, there is no player authentication, and the socket is unencrypted:
+TLS belongs to a reverse proxy.
 
 ```
 CREATE   createGameSession → saveSession → store            (saved once, or it fails)

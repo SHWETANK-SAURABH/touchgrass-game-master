@@ -115,7 +115,7 @@ durationMs }`. `GOLDEN_CASES` is the fixed set of scenarios; `runEvaluation` add
 `eval/game-master.eval.live.ts` measures the real model and runs only with
 `GAME_MASTER_LIVE_EVAL=1 npm run ai:live`.
 
-## Not implemented yet
+## What is not in this package
 
 Nothing in this package decides when to ask the Game Master, and nothing here calls
 `runGameMasterTurn` on its own. For a live session that decision, and the path from an applied

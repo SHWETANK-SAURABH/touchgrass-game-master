@@ -133,6 +133,7 @@ Docker with Compose is enough. This builds the image and runs it with a MongoDB:
 export ADMIN_TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
 docker compose -f docker-compose.prod.yml up --build -d
 SMOKE_BASE_URL=http://127.0.0.1:3001 npm run smoke:server
+npm run demo:server                                  # optional: plays a scripted round
 docker compose -f docker-compose.prod.yml down        # add -v to delete the data too
 ```
 
@@ -310,6 +311,7 @@ npm run verify            # format, lint, typecheck, tests
 npm run build:server      # dist/server/*.mjs
 npm run start:server      # node dist/server/main.mjs
 npm run smoke:server      # against a running server; needs ADMIN_TOKEN
+npm run demo:server       # plays a scripted round against a running server
 
 docker build -f Dockerfile.server -t touchgrass-server .
 ```

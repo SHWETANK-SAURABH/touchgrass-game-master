@@ -19,6 +19,7 @@
     "build:server": "node scripts/build-server.mjs",
     "start:server": "node dist/server/main.mjs",
     "smoke:server": "node scripts/smoke-server.mjs",
+    "demo:server": "node scripts/demo-game.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

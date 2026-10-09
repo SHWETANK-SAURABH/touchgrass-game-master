@@ -7,11 +7,12 @@ import { getServerEnv, toErrorMessage } from '@touchgrass/shared';
 /**
  * Liveness and readiness in one response.
  *
- * This route is the end-to-end proof that the Phase 1 seams are wired: it reads
- * validated configuration from `shared`, builds a provider through the `ai`
- * abstraction without naming Ollama, probes the open-weight runtime, and counts
- * what `game-definitions` and `safety` actually contain. If it answers, the
- * foundation is real.
+ * It reads validated configuration from `shared`, builds a provider through the
+ * `ai` abstraction without naming Ollama, probes the open-weight runtime, and
+ * counts what `game-definitions` and `safety` actually contain.
+ *
+ * This is the web app's own health. The game server is a separate process with
+ * its own `/healthz` and `/readyz`; see DEPLOYMENT.md.
  *
  * `model.ok: false` is reported with HTTP 200 and `status: "degraded"` on purpose.
  * The app serves game rules and the lobby perfectly well without a model; only
@@ -44,7 +45,8 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json(
     {
       status: model.ok ? 'ok' : 'degraded',
-      phase: 'phase-5i-persistent-server',
+      // The web app's part of the project. It does not say what the game server can do.
+      phase: 'web-catalogue',
       checkedAt: new Date().toISOString(),
       durationMs: Math.round(performance.now() - startedAt),
       model,
@@ -53,7 +55,9 @@ export async function GET(): Promise<NextResponse> {
         gameIds: GAME_IDS,
         hazardCategories: HAZARD_CATEGORY_IDS.length,
       },
-      notImplemented: ['game-ui', 'game-master-integration', 'realtime', 'persistence'],
+      // Not in this web app. Realtime play, the Game Master and persistence are
+      // in the game server, which this site does not connect to.
+      notImplemented: ['game-ui'],
     },
     {
       status: 200,

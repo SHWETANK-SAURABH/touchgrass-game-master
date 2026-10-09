@@ -13,6 +13,9 @@
 **AI proposes; schema checks shape; domain validation checks legality; safety validation checks
 real-world risk; the deterministic engine executes.**
 
+Changing AI code? Read [the safety contract](./CONTRIBUTING.md#the-safety-contract) first. It is the
+short version of this document.
+
 **Schema-valid does not mean game-valid.** In the Phase 3A live run, real Gemma output that passed
 the schema named players (`"123"`), roles (`"merchant"`) and powers (`"speedBoost"`) that did not
 exist, and offered a shield to a player who already held one. The schema cannot know any of that;
@@ -506,8 +509,8 @@ factory.
 
 Every generation reports `latencyMs`, `attempts`, `model`, and token usage where the runtime provides
 it. Validation failures log the field-level issues and the raw completion. This is the telemetry that
-makes prompt work empirical rather than anecdotal, and it is why Sentry (a later phase) has something worth
-collecting.
+makes prompt work empirical rather than anecdotal, and it is what the turn record, the metrics and the optional
+Sentry reports are built from.
 
 ---
 
