@@ -53,41 +53,59 @@ that differs from `GAME_SERVER_URL`, for example `wss://…` behind a TLS proxy)
 stays on the site's server. Anyone who can open the site can create a game, so limit who can reach
 it or put a rate limit in front of it. This pairing has been run on a developer machine only.
 
-### The website on Vercel
+### Vercel
 
-The website can be hosted on Vercel. **The game server cannot**: it holds WebSocket connections and
-every game in memory, and runs a clock, so it needs a long-running process (the Docker image above,
-on any host that runs containers). Vercel hosts the pages and the two small routes that reach it.
+`vercel.json` at the repository root describes one Vercel project with two
+[services](https://vercel.com/docs/services):
 
-This setup is configured and builds locally with `next build`. It has **not** been deployed to
-Vercel or tested there.
+| Service | What it is                                      | Public paths    |
+| ------- | ----------------------------------------------- | --------------- |
+| `web`   | The website, `apps/web`, built as Next.js       | Everything else |
+| `game`  | The game server, built from `Dockerfile.server` | `/sessions/…`   |
 
-1. Import the repository in Vercel and set **Root Directory** to `apps/web`. Leave the build and
-   install commands at their defaults: Vercel installs the npm workspace from the repository root,
-   and `apps/web/vercel.json` names the framework.
-2. Use Node.js 22 or newer (Project Settings, Build and Deployment).
-3. Set the environment variables below, then deploy.
+`web` reaches `game` over a service binding: Vercel sets `GAME_SERVER_URL` for it, so do not set
+that variable yourself. Only the WebSocket path is public. `/admin/…`, `/healthz` and `/readyz` are
+reachable through the binding and not from the internet.
 
-| Variable             | Value                                                                       |
-| -------------------- | --------------------------------------------------------------------------- |
-| `GAME_SERVER_URL`    | The game server's public `https://` address                                 |
-| `ADMIN_TOKEN`        | The same value the game server was started with. Mark it sensitive          |
-| `GAME_SERVER_WS_URL` | Only if browsers use a different address from `GAME_SERVER_URL` (`wss://…`) |
+This configuration has **not** been deployed to Vercel or tested there. Locally, the site builds
+with `next build`, the image builds from `Dockerfile.server`, and the code paths are unit-tested.
 
-Things that differ from running it yourself:
+Set these in the project's environment variables:
 
-- **The game server must be served over TLS.** Vercel serves the site over https, and a browser
-  will not open a `ws://` connection from an https page. With a `ws://` address the site says
-  playing is not set up, instead of failing when someone joins.
-- **The game server must be reachable from the internet**, both by Vercel (to create a game) and by
-  players' browsers (to play). `SERVER_HOST=0.0.0.0` behind a TLS reverse proxy.
-- **Without the variables the site still deploys.** It shows the games and their rules and says
-  that games cannot be started.
-- **The site is public, so anyone can create a game on your game server.** There are no accounts
-  and no rate limit. Use Vercel's deployment protection or firewall rules if that matters.
+| Variable             | Value                                                                 |
+| -------------------- | --------------------------------------------------------------------- |
+| `GAME_SERVER_WS_URL` | `same-origin`: browsers connect to the site's own address             |
+| `ADMIN_TOKEN`        | 32 or more characters of your own. Mark it sensitive                  |
+| `MONGODB_URI`        | A MongoDB the game server can reach, for example MongoDB Atlas        |
+| `SESSION_TOKEN_KEY`  | Base64 of 32 or more random bytes, so player tokens outlive a restart |
+| `PORT`               | `3001`, the port the game server's image listens on                   |
+
+**Read this before relying on it for real games.** Vercel runs a container service as Vercel
+Functions, and the game server was written as one long-running process. Three things follow, all
+from Vercel's own documentation:
+
+- **Players of one game can land on different instances.** A new connection can reach any
+  instance, and each instance keeps its own copy of a game in memory. Two instances that both load
+  the same game do not see each other's players or actions, and each saves over the other. The
+  game server has no shared store for live games (no Redis), so it is correct only while exactly
+  one instance is running. Under light use that is the usual case; it is not guaranteed.
+- **A connection is closed when the function reaches its maximum duration**: 300 seconds on
+  Hobby, up to 800 seconds on Pro. A round of Hide & Seek is 300 seconds and a game is three
+  rounds. The site reconnects by itself, but the new connection may reach another instance.
+- **An instance with no traffic is stopped** after five minutes in production. The game server
+  saves its games when it is asked to stop, and loads a game again when someone reconnects.
+
+For games that must not break, run the game server as a single long-running container on a host
+built for that, keep only the website on Vercel, and set `GAME_SERVER_URL` to its `https://`
+address yourself (remove the `game` service, its rewrite and the binding from `vercel.json`).
+
+Also true on Vercel:
+
+- **The site is public, so anyone can create a game.** There are no accounts and no rate limit.
+  Use Vercel's deployment protection or firewall rules if that matters.
 - **The Game Master status box** reports whether the site can reach `MODEL_BASE_URL`. On Vercel
   that is not your local Ollama, so it reads as not running unless you point it at a reachable
-  runtime. Twists in a game come from the game server's own model settings, not from this.
+  runtime.
 
 The game server process owns every WebSocket connection, is the only process that connects to
 MongoDB, and is the only process that calls the model runtime.

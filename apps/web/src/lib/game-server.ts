@@ -40,8 +40,36 @@ export type CreateSessionResult =
 type Settings = Pick<ServerEnv, 'GAME_SERVER_URL' | 'GAME_SERVER_WS_URL' | 'ADMIN_TOKEN'>;
 type Fetch = typeof fetch;
 
-/** The address a browser connects to: the one given, or the server's own as ws:// or wss://. */
-export function browserAddress(settings: Settings): string | null {
+/** Where the visitor opened the site: its host, and whether that was over https. */
+export interface SiteOrigin {
+  readonly host: string;
+  readonly secure: boolean;
+}
+
+/** Marks the game server as being behind the site's own address. */
+export const SAME_ORIGIN = 'same-origin';
+
+/** The site's address as a request reports it, behind a proxy or not. */
+export function siteOriginOf(request: Request): SiteOrigin {
+  const first = (name: string): string | undefined =>
+    request.headers.get(name)?.split(',')[0]?.trim() || undefined;
+  const url = new URL(request.url);
+  return {
+    host: first('x-forwarded-host') ?? first('host') ?? url.host,
+    secure: (first('x-forwarded-proto') ?? url.protocol.replace(':', '')) === 'https',
+  };
+}
+
+/**
+ * The address a browser connects to: the one given, the site's own when the
+ * game server sits behind it, or the server's own as ws:// or wss://.
+ */
+export function browserAddress(settings: Settings, site?: SiteOrigin): string | null {
+  if (settings.GAME_SERVER_WS_URL === SAME_ORIGIN) {
+    // Only a plain host name and port: this ends up in a URL a browser opens.
+    if (!site || !/^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(site.host)) return null;
+    return `${site.secure ? 'wss' : 'ws'}://${site.host}`;
+  }
   if (settings.GAME_SERVER_WS_URL) return settings.GAME_SERVER_WS_URL.replace(/\/+$/, '');
   if (!settings.GAME_SERVER_URL) return null;
   return settings.GAME_SERVER_URL.replace(/^http/, 'ws').replace(/\/+$/, '');
@@ -52,20 +80,20 @@ const baseOf = (settings: Settings): string => (settings.GAME_SERVER_URL ?? '').
 /**
  * Whether games can be played from this site right now.
  *
- * `pageIsSecure` is whether the visitor loaded the site over https. A browser
- * refuses a ws:// connection from an https page, so that pairing is reported as
- * not set up rather than left to fail when someone tries to join.
+ * `site` is where the visitor opened the site. A browser refuses a ws://
+ * connection from an https page, so that pairing is reported as not set up
+ * rather than left to fail when someone tries to join.
  */
 export async function getPlayConfig(
   settings: Settings,
   request: Fetch = fetch,
-  pageIsSecure = false,
+  site?: SiteOrigin,
 ): Promise<PlayConfig> {
-  const wsUrl = browserAddress(settings);
+  const wsUrl = browserAddress(settings, site);
   if (!settings.GAME_SERVER_URL || !settings.ADMIN_TOKEN || !wsUrl) {
     return { enabled: false, reason: 'NOT_CONFIGURED' };
   }
-  if (pageIsSecure && wsUrl.startsWith('ws://')) {
+  if (site?.secure && wsUrl.startsWith('ws://')) {
     return { enabled: false, reason: 'NOT_CONFIGURED' };
   }
   try {
@@ -85,11 +113,12 @@ export async function createSession(
   settings: Settings,
   gameId: unknown,
   request: Fetch = fetch,
+  site?: SiteOrigin,
 ): Promise<CreateSessionResult> {
   if (typeof gameId !== 'string' || !isPlayable(gameId)) {
     return { ok: false, code: 'GAME_NOT_PLAYABLE' };
   }
-  const wsUrl = browserAddress(settings);
+  const wsUrl = browserAddress(settings, site);
   if (!settings.GAME_SERVER_URL || !settings.ADMIN_TOKEN || !wsUrl) {
     return { ok: false, code: 'NOT_CONFIGURED' };
   }

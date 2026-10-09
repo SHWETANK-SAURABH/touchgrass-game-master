@@ -57,10 +57,17 @@ export const serverEnvSchema = z
     // shows the catalogue, and says that playing is not set up.
     /** Where the web app's own server reaches the game server, e.g. http://127.0.0.1:3001. */
     GAME_SERVER_URL: httpUrl.optional(),
-    /** Where a player's browser reaches it. Defaults to GAME_SERVER_URL as ws:// or wss://. */
+    /**
+     * Where a player's browser reaches it. Defaults to GAME_SERVER_URL as ws:// or wss://.
+     * `same-origin` means the address the site itself was opened at, for a host that
+     * serves both under one domain and routes /sessions/ to the game server.
+     */
     GAME_SERVER_WS_URL: z
       .string()
-      .regex(/^wss?:\/\/[^\s/]+(\/[^\s]*)?$/, 'must be a ws:// or wss:// URL')
+      .regex(
+        /^(same-origin|wss?:\/\/[^\s/]+(\/[^\s]*)?)$/,
+        'must be a ws:// or wss:// URL, or same-origin',
+      )
       .optional(),
     /** The game server's admin token. Used on the server only; never sent to a browser. */
     ADMIN_TOKEN: z.string().min(32).optional(),

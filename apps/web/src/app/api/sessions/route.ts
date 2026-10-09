@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerEnv } from '@touchgrass/shared';
-import { createSession } from '@/lib/game-server';
+import { createSession, siteOriginOf } from '@/lib/game-server';
 
 /**
  * Creates a game on the game server, for whoever pressed "Create game".
@@ -40,7 +40,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'NOT_CONFIGURED' }, { status: 503, headers });
   }
 
-  const created = await createSession(env, (body as { gameId?: unknown } | null)?.gameId);
+  const created = await createSession(
+    env,
+    (body as { gameId?: unknown } | null)?.gameId,
+    fetch,
+    siteOriginOf(request),
+  );
   if (!created.ok) {
     return NextResponse.json({ error: created.code }, { status: STATUS[created.code], headers });
   }

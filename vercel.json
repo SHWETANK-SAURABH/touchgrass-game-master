@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": "apps/web",
+      "framework": "nextjs",
+      "bindings": [
+        { "type": "service", "service": "game", "format": "url", "env": "GAME_SERVER_URL" }
+      ]
+    },
+    "game": {
+      "root": ".",
+      "runtime": "container",
+      "entrypoint": "Dockerfile.server"
+    }
+  },
+  "rewrites": [
+    { "source": "/sessions/(.*)", "destination": { "service": "game" } },
+    { "source": "/(.*)", "destination": { "service": "web" } }
+  ]
+}

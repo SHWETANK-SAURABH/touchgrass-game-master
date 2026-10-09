@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listGameDefinitions } from '@touchgrass/game-definitions';
-import { browserAddress, createSession, getPlayConfig } from './game-server';
+import { browserAddress, createSession, getPlayConfig, siteOriginOf } from './game-server';
 import { PLAYABLE_GAME_IDS, isPlayable, playableFirst } from './playable';
 
 // Not a credential: a marker that must never appear in anything sent to a browser.
@@ -62,6 +62,40 @@ describe('browserAddress', () => {
   it('is absent when nothing is configured', () => {
     expect(browserAddress({})).toBeNull();
   });
+
+  it('is the site itself when the game server is behind the same address', () => {
+    const behind = { ...settings, GAME_SERVER_WS_URL: 'same-origin' };
+    expect(browserAddress(behind, { host: 'play.example-host.invalid', secure: true })).toBe(
+      'wss://play.example-host.invalid',
+    );
+    expect(browserAddress(behind, { host: 'localhost:3000', secure: false })).toBe(
+      'ws://localhost:3000',
+    );
+  });
+
+  it('is absent when the site address is unknown or is not a plain host', () => {
+    const behind = { ...settings, GAME_SERVER_WS_URL: 'same-origin' };
+    expect(browserAddress(behind)).toBeNull();
+    for (const host of ['', 'a b', 'evil.invalid/path', 'user@evil.invalid', 'x"><script>']) {
+      expect(browserAddress(behind, { host, secure: true })).toBeNull();
+    }
+  });
+});
+
+describe('siteOriginOf', () => {
+  it('reads the address a proxy forwarded', () => {
+    const request = new Request('http://internal.invalid:3000/api/play', {
+      headers: { 'x-forwarded-host': 'play.example-host.invalid', 'x-forwarded-proto': 'https' },
+    });
+    expect(siteOriginOf(request)).toEqual({ host: 'play.example-host.invalid', secure: true });
+  });
+
+  it('falls back to the request itself', () => {
+    expect(siteOriginOf(new Request('http://localhost:3000/api/play'))).toEqual({
+      host: 'localhost:3000',
+      secure: false,
+    });
+  });
 });
 
 describe('getPlayConfig', () => {
@@ -87,14 +121,15 @@ describe('getPlayConfig', () => {
   });
 
   it('is not set up when an https page would have to open a ws:// connection', async () => {
+    const site = { host: 'play.example-host.invalid', secure: true };
     const { fetch, calls } = fakeFetch(() => json(200, {}));
-    expect(await getPlayConfig(settings, fetch, true)).toEqual({
+    expect(await getPlayConfig(settings, fetch, site)).toEqual({
       enabled: false,
       reason: 'NOT_CONFIGURED',
     });
     expect(calls).toHaveLength(0);
     const secure = { ...settings, GAME_SERVER_URL: 'https://example-host.invalid' };
-    expect(await getPlayConfig(secure, fetch, true)).toEqual({
+    expect(await getPlayConfig(secure, fetch, site)).toEqual({
       enabled: true,
       wsUrl: 'wss://example-host.invalid',
     });

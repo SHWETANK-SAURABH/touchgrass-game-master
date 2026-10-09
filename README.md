@@ -174,8 +174,9 @@ From then on the browser talks to the game server over the same WebSocket protoc
 client, and every action is checked by the engine. **Anyone who can open the site can create a
 game**, so do not put it on the public internet without your own limits in front of it.
 
-To host the website on Vercel (the game server has to run elsewhere), see
-[DEPLOYMENT.md](./DEPLOYMENT.md#the-website-on-vercel).
+`vercel.json` describes a Vercel project with the website and the game server as two services.
+It is untested there and has limits that matter for real games: see
+[DEPLOYMENT.md](./DEPLOYMENT.md#vercel).
 
 ### MongoDB
 
