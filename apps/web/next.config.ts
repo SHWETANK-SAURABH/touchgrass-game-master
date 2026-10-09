@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
   transpilePackages: [
     '@touchgrass/ai',
     '@touchgrass/game-definitions',
+    '@touchgrass/game-engine',
     '@touchgrass/safety',
     '@touchgrass/shared',
   ],

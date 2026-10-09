@@ -344,10 +344,11 @@ describe('the application layer keeps no module-level state and no storage of it
       );
       // One timer exists: the multi-session development server's sweep, which
       // only asks the registry to look. Nothing in the library has a timer.
-      // One timer each in the two places that run a server on a schedule: the
-      // eviction sweep. It only asks the registry to look.
+      // Timers exist only where a server is run on a schedule: the eviction
+      // sweep in both, and in the production server the game clock as well.
+      // Each only asks something else to look.
       expect(code.match(/setInterval/g) ?? [], name).toHaveLength(
-        name === 'dev-sessions.ts' || name === 'production-server.ts' ? 1 : 0,
+        name === 'production-server.ts' ? 2 : name === 'dev-sessions.ts' ? 1 : 0,
       );
       // One table exists: the registry's own, made inside each registry.
       const tables = code.split('\n').filter((line) => line.includes('new Map'));

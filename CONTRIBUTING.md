@@ -260,8 +260,8 @@ or install [Ollama](https://ollama.com) and run `ollama pull gemma3:4b`.
 
 Please open an issue to discuss these first, so nobody builds something that cannot be merged.
 
-- **A browser game client.** There is none. It would speak the protocol in
-  `packages/realtime/src/protocol.ts`.
+- **Browser tests for the game room.** The website's game room (`apps/web/src/components/game-room.tsx`)
+  has unit tests for its view logic only.
 - **Making a third game playable.** Ice & Fire, Treasure Hunt and Nature Challenge are defined but
   the engine does not run them yet.
 - **A new deterministic game event**, with its engine rule, its safety cases and its tests.

@@ -1,7 +1,10 @@
-import type { Metadata } from 'next';
+import type { Metadata, Route } from 'next';
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { GAME_IDS, findGameDefinition } from '@touchgrass/game-definitions';
 import { policyFor } from '@touchgrass/safety';
+import { GameFacts, GameStatusBadge, Notice, buttonPrimary, linkStyle } from '@/components/ui';
+import { isPlayable } from '@/lib/playable';
 
 interface PageProps {
   params: Promise<{ gameId: string }>;
@@ -30,14 +33,35 @@ export default async function GamePage({ params }: PageProps) {
 
   return (
     <article className="space-y-10">
-      <header className="space-y-3">
-        <h1 className="text-3xl font-black tracking-tight">{game.name}</h1>
-        <p className="text-bark-800 dark:text-moss-100/80 text-lg">{game.tagline}</p>
-        <p className="text-bark-700 dark:text-moss-200/60 font-mono text-xs">
-          {game.minPlayers}–{game.maxPlayers} players · {game.recommendedDurationMinutes} min ·{' '}
-          {game.spaceRequirement} space · {game.intensity} intensity ·{' '}
-          {game.equipment.length === 0 ? 'no equipment' : game.equipment.join(', ')}
+      <p>
+        <Link href="/games" className={linkStyle}>
+          ← All games
+        </Link>
+      </p>
+
+      <header className="space-y-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-3xl font-black tracking-tight sm:text-4xl">{game.name}</h1>
+          <GameStatusBadge gameId={game.id} />
+        </div>
+        <p className="text-lg">{game.tagline}</p>
+        <GameFacts game={game} />
+        <p className="text-bark-700 dark:text-moss-200/80 text-sm">
+          Equipment: {game.equipment.length === 0 ? 'none' : game.equipment.join(', ')}
         </p>
+        {isPlayable(game.id) ? (
+          <Link href={`/play/${game.id}` as Route} className={buttonPrimary}>
+            Play {game.name}
+          </Link>
+        ) : (
+          <Notice title="Coming soon">
+            The rules below are final, but this game cannot be played here yet.{' '}
+            <Link href="/games" className={linkStyle}>
+              See what you can play now
+            </Link>
+            .
+          </Notice>
+        )}
       </header>
 
       <Section title="How it works">

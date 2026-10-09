@@ -347,7 +347,9 @@ not a guarantee. [SAFETY.md](./SAFETY.md) lists what it cannot do.
 > and keeps the labels of the internal steps (5A to 5P) because the reasoning is attached to them.
 >
 > What it still is not: there is no player authentication (bearer tokens only), no TLS in the
-> server, no automatic clock, no Redis, no second process, and no browser game client.
+> server, no Redis and no second process. Two things were added after this section was written: the
+> production server tells every loaded game the time on an interval (`SESSION_TICK_MS`), and the
+> website in `apps/web` is a browser client of this protocol.
 
 The function at the bottom, which everything above it calls:
 
@@ -870,8 +872,9 @@ may still remove one.
 **Time.**
 
 - `room.tick(ctx)` is a trusted server-side call that advances time and broadcasts if the game
-  changed. Nothing calls it on a timer, so a game moves forward in time only when a message is
-  accepted or something calls `tick`.
+  changed. The production server calls it for every loaded game on an interval (`SESSION_TICK_MS`,
+  one second by default), which is what ends a round when nobody sends anything. The development
+  servers do not: there a game moves forward in time only when a message is accepted.
 - The adapter stamps each frame from an injected `Clock`. The room, the session and the engine read
   none.
 
@@ -1167,7 +1170,6 @@ no separate agent memory and no vector store.
 
 | Not built                            | Why it matters                                                      |
 | ------------------------------------ | ------------------------------------------------------------------- |
-| A browser game client                | Games are played over the protocol; there is no UI to play in       |
 | Three of the five games              | Ice & Fire, Treasure Hunt and Nature Challenge are definitions only |
 | Player authentication, TLS           | Tokens are bearer capabilities; TLS belongs to a reverse proxy      |
 | Redis, more than one process         | Every session is in one process's memory                            |

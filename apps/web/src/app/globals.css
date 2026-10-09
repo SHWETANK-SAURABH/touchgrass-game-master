@@ -45,3 +45,32 @@ body {
     color: var(--color-moss-100);
   }
 }
+
+/* Anything that can be focused shows that it is, unless it sets its own ring. */
+:focus-visible {
+  outline: 3px solid var(--color-sun-500);
+  outline-offset: 2px;
+}
+
+/* Hidden until a keyboard user reaches it, then first on the page. */
+.skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: -4rem;
+  z-index: 50;
+  border-radius: 0.5rem;
+  background-color: var(--color-moss-800);
+  padding: 0.75rem 1rem;
+  font-weight: 700;
+  color: #fff;
+}
+.skip-link:focus {
+  top: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -37,6 +37,7 @@ const READ_BY_THE_SERVER = [
   'SESSION_FINISHED_IDLE_MS',
   'SESSION_SWEEP_MS',
   'WS_HEARTBEAT_MS',
+  'SESSION_TICK_MS',
   'SHUTDOWN_TIMEOUT_MS',
   'GAME_MASTER_ENABLED',
   'GAME_MASTER_TIMEOUT_MS',
@@ -75,6 +76,7 @@ describe('.env.example', () => {
       ['SESSION_FINISHED_IDLE_MS', 'x'],
       ['SESSION_SWEEP_MS', 'x'],
       ['WS_HEARTBEAT_MS', 'x'],
+      ['SESSION_TICK_MS', 'x'],
       ['SHUTDOWN_TIMEOUT_MS', 'x'],
       ['MONGODB_TIMEOUT_MS', 'x'],
       ['GAME_MASTER_ENABLED', 'x'],
@@ -100,6 +102,8 @@ describe('.env.example', () => {
       'SENTRY_DSN',
       'MODEL_API_KEY',
       'REDIS_URL',
+      'GAME_SERVER_URL',
+      'GAME_SERVER_WS_URL',
     ]) {
       expect(entries.get(name), name).toBe('');
     }

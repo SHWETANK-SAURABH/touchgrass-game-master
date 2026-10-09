@@ -1,75 +1,69 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { listGameDefinitions } from '@touchgrass/game-definitions';
+import { GameCard } from '@/components/game-card';
+import { linkStyle, muted } from '@/components/ui';
+import { isPlayable } from '@/lib/playable';
 
 export const metadata: Metadata = {
   title: 'Games',
   description:
-    'Every TouchGrass game, with its roles, phases, safety profile, and the optional event kinds it supports.',
+    'Every TouchGrass game: what it is, how many players it needs, and whether you can play it now.',
 };
 
 export default function GamesPage() {
   const games = listGameDefinitions();
+  const playable = games.filter((game) => isPlayable(game.id));
+  const upcoming = games.filter((game) => !isPlayable(game.id));
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-12">
       <header className="space-y-3">
-        <h1 className="text-3xl font-black tracking-tight">Games</h1>
-        <p className="text-bark-800 dark:text-moss-100/80 max-w-2xl">
-          Each game is a validated data file in{' '}
-          <code className="font-mono text-sm">packages/game-definitions</code>, not code. It
-          declares its own roles, phases, contact policy, inherent risks, and the subset of event
-          kinds the Game Master is permitted to propose. Adding a sixth game is a pull request
-          against one file.
+        <h1 className="text-3xl font-black tracking-tight sm:text-4xl">Games</h1>
+        <p className="max-w-2xl text-lg">
+          Pick a game to start one with your friends. Already have a link from a host?{' '}
+          <Link href="/join" className={linkStyle}>
+            Join their game
+          </Link>
+          .
         </p>
       </header>
 
-      <ul className="space-y-4">
-        {games.map((game) => (
-          <li
-            key={game.id}
-            className="border-moss-200 dark:border-bark-700 dark:bg-bark-800/60 rounded-xl border bg-white/60 p-5"
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-3">
-              <h2 className="text-xl font-bold">
-                <Link href={`/games/${game.id}`} className="hover:text-moss-600">
-                  {game.name}
-                </Link>
-              </h2>
-              <p className="text-bark-700 dark:text-moss-200/60 font-mono text-xs">
-                {game.minPlayers}–{game.maxPlayers} players · {game.recommendedDurationMinutes} min
-                · {game.spaceRequirement} space · {game.intensity} intensity
-              </p>
-            </div>
+      <section aria-labelledby="playable-heading" className="space-y-4">
+        <h2 id="playable-heading" className="text-2xl font-black tracking-tight">
+          Play now
+        </h2>
+        {playable.length === 0 ? (
+          <p className={muted}>No games can be played yet.</p>
+        ) : (
+          <ul className="grid gap-4 sm:grid-cols-2">
+            {playable.map((game) => (
+              <li key={game.id}>
+                <GameCard game={game} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-            <p className="text-bark-800 dark:text-moss-100/80 mt-2 text-sm">{game.tagline}</p>
-
-            <div className="mt-4 flex flex-wrap gap-1.5">
-              {game.allowedEventKinds.map((kind) => (
-                <span
-                  key={kind}
-                  className="bg-moss-200 text-moss-800 dark:bg-moss-900 dark:text-moss-200 rounded px-2 py-0.5 font-mono text-[11px] font-semibold"
-                >
-                  {kind}
-                </span>
-              ))}
-            </div>
-
-            <p className="text-bark-700 dark:text-moss-200/60 mt-4 text-xs">
-              Contact: {game.safety.contactPolicy} · Separation:{' '}
-              {game.safety.involvesSeparation ? 'expected' : 'none'} ·{' '}
-              {game.safety.inherentRisks.length} inherent risks documented
-            </p>
-
-            <Link
-              href={`/games/${game.id}`}
-              className="text-moss-700 decoration-moss-400 dark:text-moss-300 mt-3 inline-block text-sm font-semibold underline underline-offset-4"
-            >
-              Full rules, roles and Game Master guidance →
-            </Link>
-          </li>
-        ))}
-      </ul>
+      {upcoming.length > 0 && (
+        <section aria-labelledby="upcoming-heading" className="space-y-4">
+          <h2 id="upcoming-heading" className="text-2xl font-black tracking-tight">
+            Coming soon
+          </h2>
+          <p className={`max-w-2xl ${muted}`}>
+            These games have their rules written, but they cannot be played here yet. You can read
+            how each one will work.
+          </p>
+          <ul className="grid gap-4 sm:grid-cols-2">
+            {upcoming.map((game) => (
+              <li key={game.id}>
+                <GameCard game={game} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }

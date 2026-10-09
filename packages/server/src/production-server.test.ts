@@ -16,7 +16,7 @@ import {
 import { type ProductionServer, startProductionServer } from './production-server';
 import type { ErrorReporter } from './reporting';
 import { Client, READY, heldStore, until } from './socket-test-support';
-import { codeOf, unwrap } from './test-support';
+import { codeOf, testClock, unwrap } from './test-support';
 
 /**
  * The deployed server, started in this process on a free port with an in-memory
@@ -518,6 +518,84 @@ describe('shutting down', () => {
   });
 });
 
+describe('the game clock', () => {
+  /** A server on a test clock, with two players in a running game of Tag. */
+  async function playing(env: Record<string, string>) {
+    const clock = testClock();
+    const backing = heldStore();
+    const server = unwrap(
+      await startProductionServer({ config: config(env), store: backing.store, clock }),
+    );
+    running.push(server);
+    const created = await fetch(`http://127.0.0.1:${String(server.port)}/admin/sessions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ gameId: 'tag' }),
+    });
+    const body = (await created.json()) as Record<string, string>;
+    const id = String(body.sessionId);
+    const clients = [await Client.open(server.port, id), await Client.open(server.port, id)];
+    await joinAs(clients[0] as Client, body, 'Ada');
+    await joinAs(clients[1] as Client, body, 'Bo');
+    for (const client of clients) client.send(READY);
+    const handle = server.sessions.registry.get(id);
+    if (!handle) throw new Error('fixture failed');
+    await eventually(() => handle.session.getState().status === 'active');
+    return { server, clock, handle, clients };
+  }
+
+  it('ends rounds and finishes the game when time passes, with nobody sending anything', async () => {
+    const { clock, handle, clients } = await playing({ SESSION_TICK_MS: '25' });
+    expect(handle.session.getState().currentRound).toBe(1);
+    const roundMs = handle.session.getState().settings.roundDurationSeconds * 1_000;
+
+    // The first round runs out.
+    clock.set(roundMs + 1_000);
+    await eventually(() => handle.session.getState().currentRound === 2);
+    expect(handle.session.getState().status).toBe('active');
+
+    // And then all of them: the engine declares the game over and names who won.
+    clock.set(10 * roundMs);
+    await eventually(() => handle.session.getState().status === 'completed');
+    expect(handle.session.getState().winnerIds.length).toBeGreaterThan(0);
+    expect(handle.isFinished()).toBe(true);
+
+    // Every player was told, by the room, in the ordinary way.
+    for (const client of clients) {
+      let last = await client.next();
+      while (last.state?.status !== 'completed') last = await client.next();
+      expect(last.type).toBe('update');
+    }
+  });
+
+  it('changes nothing and tells nobody while nothing is due', async () => {
+    const { clock, handle, clients } = await playing({ SESSION_TICK_MS: '20' });
+    for (const client of clients) while (client.pending() > 0) await client.next();
+    const before = handle.session.getState();
+    clock.set(5_000);
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+    expect(handle.session.getState()).toBe(before);
+    for (const client of clients) expect(client.pending()).toBe(0);
+  });
+
+  it('can be turned off, and then a round ends only when something is sent', async () => {
+    const { clock, handle } = await playing({ SESSION_TICK_MS: '0' });
+    const roundMs = handle.session.getState().settings.roundDurationSeconds * 1_000;
+    clock.set(roundMs + 1_000);
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+    expect(handle.session.getState().currentRound).toBe(1);
+  });
+
+  it('stops with the server', async () => {
+    const { server, clock, handle } = await playing({ SESSION_TICK_MS: '20' });
+    await server.shutdown();
+    const frozen = handle.session.getState();
+    clock.set(10 * 180_000);
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(handle.session.getState()).toBe(frozen);
+  });
+});
+
 describe('starting', () => {
   it('reports a port that is taken and leaves the store open', async () => {
     const { server, storeCalls, store } = await withStoreCalls();
@@ -548,6 +626,7 @@ describe('the production configuration', () => {
       reporting: { enabled: false },
       shutdownTimeoutMs: DEFAULT_SHUTDOWN_TIMEOUT_MS,
       heartbeatMs: DEFAULT_WS_HEARTBEAT_MS,
+      tickMs: 1_000,
     });
     expect(parsed.host).toBe('127.0.0.1');
     expect(parsed.mongo.serverSelectionTimeoutMs).toBe(DEFAULT_MONGODB_TIMEOUT_MS);

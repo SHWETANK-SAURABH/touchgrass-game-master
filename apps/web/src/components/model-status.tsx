@@ -75,63 +75,60 @@ export function ModelStatus() {
         ? 'border-moss-200 bg-moss-50 dark:border-bark-700 dark:bg-bark-800'
         : 'border-sun-400 bg-sun-400/10';
 
+  const summary =
+    state.phase === 'loading'
+      ? 'Checking whether the AI model is running…'
+      : state.phase === 'error'
+        ? 'We could not check on the AI model just now.'
+        : state.data.status === 'ok'
+          ? 'The AI model is running, so the Game Master can add twists.'
+          : state.data.status === 'misconfigured'
+            ? 'The AI model is not set up correctly on this site.'
+            : 'The AI model is not running. Games still work; they just have no Game Master twists.';
+
   return (
-    <section className={`rounded-xl border p-5 ${tone}`} aria-live="polite">
+    <section className={`rounded-2xl border-2 p-5 ${tone}`} aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-bold tracking-wide uppercase">Open-weight model</h2>
+        <h3 className="text-lg font-black">Game Master status</h3>
         <button
           type="button"
           onClick={recheck}
-          className="rounded-md border border-current px-2.5 py-1 text-xs font-semibold hover:bg-black/5 dark:hover:bg-white/10"
+          className="focus-visible:outline-sun-500 min-h-11 rounded-lg border-2 border-current px-3 text-sm font-semibold hover:bg-black/5 focus-visible:outline-3 focus-visible:outline-offset-2 dark:hover:bg-white/10"
         >
-          Re-check
+          Check again
         </button>
       </div>
 
-      {state.phase === 'loading' && <p className="mt-3 text-sm">Checking the model runtime…</p>}
-
-      {state.phase === 'error' && (
-        <p className="mt-3 text-sm">Could not reach the app health endpoint: {state.message}</p>
-      )}
+      <p className="mt-2 font-semibold">{summary}</p>
 
       {state.phase === 'loaded' && state.data.status === 'misconfigured' && (
-        <div className="mt-3 space-y-2 text-sm">
-          <p className="font-semibold">Configuration is invalid.</p>
-          <pre className="overflow-x-auto rounded-md bg-black/5 p-3 font-mono text-xs dark:bg-white/10">
-            {state.data.error}
-          </pre>
-          <p>
-            Run <code className="font-mono">npm run setup</code> and review the generated files.
-          </p>
-        </div>
+        <p className="mt-2 text-sm">
+          If you run this site yourself: run <code className="font-mono">npm run setup</code> and
+          check the settings it creates.
+        </p>
       )}
 
       {state.phase === 'loaded' && state.data.model && (
-        <div className="mt-3 space-y-3 text-sm">
-          <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-[auto_1fr]">
+        <details className="mt-3 text-sm">
+          <summary className="focus-visible:outline-sun-500 cursor-pointer rounded font-semibold focus-visible:outline-3 focus-visible:outline-offset-2">
+            Technical details
+          </summary>
+          <dl className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-[auto_1fr]">
             <dt className="font-semibold">Provider</dt>
             <dd className="font-mono text-xs sm:text-sm">{state.data.model.provider}</dd>
             <dt className="font-semibold">Model</dt>
             <dd className="font-mono text-xs sm:text-sm">{state.data.model.model}</dd>
-            <dt className="font-semibold">Endpoint</dt>
-            <dd className="font-mono text-xs sm:text-sm">{state.data.model.baseUrl}</dd>
             <dt className="font-semibold">Reachable</dt>
             <dd>{state.data.model.reachable ? `yes (${state.data.model.latencyMs}ms)` : 'no'}</dd>
             <dt className="font-semibold">Model present</dt>
             <dd>{state.data.model.modelAvailable ? 'yes' : 'no'}</dd>
           </dl>
-
           {state.data.model.detail && (
-            <p className="rounded-md bg-black/5 p-3 dark:bg-white/10">{state.data.model.detail}</p>
-          )}
-
-          {state.data.status === 'degraded' && (
-            <p className="text-xs">
-              The app still works without a model — game rules and the lobby are local data. Only
-              the Game Master is unavailable.
+            <p className="mt-2 rounded-md bg-black/5 p-3 dark:bg-white/10">
+              {state.data.model.detail}
             </p>
           )}
-        </div>
+        </details>
       )}
     </section>
   );

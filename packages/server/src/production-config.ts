@@ -37,6 +37,8 @@ export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 25_000;
 export const DEFAULT_WS_HEARTBEAT_MS = 30_000;
 /** How long a store operation may look for a database server: five seconds. */
 export const DEFAULT_MONGODB_TIMEOUT_MS = 5_000;
+/** How often the clock of every loaded game is brought up to date: once a second. */
+export const DEFAULT_SESSION_TICK_MS = 1_000;
 
 const optionalText = (value: string | undefined): string | undefined =>
   value === undefined || value.trim() === '' ? undefined : value.trim();
@@ -60,6 +62,8 @@ const deploymentSchema = z.object({
     .default(DEFAULT_SHUTDOWN_TIMEOUT_MS),
   /** 0 turns the heartbeat off. */
   WS_HEARTBEAT_MS: z.coerce.number().int().min(0).max(600_000).default(DEFAULT_WS_HEARTBEAT_MS),
+  /** 0 turns the game clock off: rounds then end only when a message arrives. */
+  SESSION_TICK_MS: z.coerce.number().int().min(0).max(60_000).default(DEFAULT_SESSION_TICK_MS),
   MONGODB_TIMEOUT_MS: z.coerce
     .number()
     .int()
@@ -84,6 +88,8 @@ export interface ProductionConfig {
   readonly tokenKey?: Uint8Array;
   readonly shutdownTimeoutMs: number;
   readonly heartbeatMs: number;
+  /** How often loaded games are told the time. 0 means never. */
+  readonly tickMs: number;
 }
 
 /** What is configured, as yes or no and plain names. Safe to log: it holds no value that was set. */
@@ -127,6 +133,7 @@ export function parseProductionConfig(
     ADMIN_TOKEN: optionalText(env.ADMIN_TOKEN),
     SHUTDOWN_TIMEOUT_MS: optionalText(env.SHUTDOWN_TIMEOUT_MS),
     WS_HEARTBEAT_MS: optionalText(env.WS_HEARTBEAT_MS),
+    SESSION_TICK_MS: optionalText(env.SESSION_TICK_MS),
     MONGODB_TIMEOUT_MS: optionalText(env.MONGODB_TIMEOUT_MS),
   });
 
@@ -183,5 +190,6 @@ export function parseProductionConfig(
     ...(tokenKey === undefined ? {} : { tokenKey }),
     shutdownTimeoutMs: deployment.data.SHUTDOWN_TIMEOUT_MS,
     heartbeatMs: deployment.data.WS_HEARTBEAT_MS,
+    tickMs: deployment.data.SESSION_TICK_MS,
   });
 }

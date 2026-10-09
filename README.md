@@ -36,10 +36,10 @@ Built for the Hacktoberfest **Touch Grass** challenge.
 | Treasure Hunt    | 2–24    | Not yet: the rules are defined, not playable |
 | Nature Challenge | 2–30    | Not yet: the rules are defined, not playable |
 
-There is **no in-browser game client yet**. The web app shows the game catalogue and whether the
-model runtime is up. Games are played over the game server's WebSocket protocol, which the
-[demo script](#see-it-work) drives end to end. A client UI is the most useful thing a contributor
-could add.
+Tag and Hide & Seek can be played **from the website**: create a game, share the link, and each
+player joins on their own phone. The site is a client of the game server, so it needs one running
+([Play from the website](#play-from-the-website)). Without one it still shows the games and their
+rules, and says plainly that games cannot be started.
 
 ---
 
@@ -94,7 +94,7 @@ should read before touching AI code.
 ## Architecture at a glance
 
 ```
-apps/web            Next.js: game catalogue and model status (no game client)
+apps/web            Next.js: the website. Game catalogue, rules, and the game room players use
 packages/
   shared            Result type, clock, ids, logger, environment schema
   game-definitions  The five games, as validated data
@@ -139,8 +139,43 @@ npm run setup        # copies .env.example to ./.env and apps/web/.env.local
 npm run dev          # http://localhost:3000
 ```
 
-It lists the games and shows the model runtime's status. If the model is not running it says
-_degraded_ and still works.
+On its own it lists the games, shows their rules and reports whether the AI model is running.
+Starting a game needs the game server as well.
+
+### Play from the website
+
+Three things run: MongoDB, the game server, and the site. The site asks the game server to create
+each game, so both are given the same `ADMIN_TOKEN` (any 32 or more characters; generate your own).
+
+```bash
+# 1. MongoDB (see below), then the game server, on port 3001:
+npm run build:server
+MONGODB_URI=mongodb://127.0.0.1:27017 ADMIN_TOKEN=<your-token> npm run start:server
+
+# 2. In another terminal, the site:
+GAME_SERVER_URL=http://127.0.0.1:3001 ADMIN_TOKEN=<your-token> npm run dev
+```
+
+Open <http://localhost:3000>, choose **Games**, pick Tag or Hide & Seek, and create a game. The
+two site settings can also go in `apps/web/.env.local` instead of on the command line.
+
+| Site setting         | What it is                                                                          |
+| -------------------- | ----------------------------------------------------------------------------------- |
+| `GAME_SERVER_URL`    | Where the site reaches the game server, e.g. `http://127.0.0.1:3001`                |
+| `ADMIN_TOKEN`        | The game server's admin token. Used on the server side only                         |
+| `GAME_SERVER_WS_URL` | Optional. The address browsers connect to, if it differs (`wss://…` behind a proxy) |
+
+Phones on the same network need addresses they can reach: start the game server with
+`SERVER_HOST=0.0.0.0` and set `GAME_SERVER_WS_URL=ws://<your-computer's-address>:3001`.
+
+How it fits together: the browser never sees the admin token. `POST /api/sessions` on the site
+calls the game server's `POST /admin/sessions` and hands the creator that one game's host token.
+From then on the browser talks to the game server over the same WebSocket protocol as any other
+client, and every action is checked by the engine. **Anyone who can open the site can create a
+game**, so do not put it on the public internet without your own limits in front of it.
+
+To host the website on Vercel (the game server has to run elsewhere), see
+[DEPLOYMENT.md](./DEPLOYMENT.md#the-website-on-vercel).
 
 ### MongoDB
 
@@ -266,7 +301,10 @@ been deployed to a cloud provider.
 
 ## Known limitations
 
-- **No game client.** There is no in-browser way to play yet.
+- **The website's game room is simple.** Players report what happened by tapping a button; nothing
+  is detected by location or sensors. It has been run in desktop and phone-sized Chrome on one
+  machine, not on a range of real phones.
+- **Anyone who can reach the website can create a game.** There are no accounts and no rate limit.
 - **Two playable games.** Tag and Hide & Seek. The other three are definitions only.
 - **Single process.** One server holds every session in memory. There is no Redis and no horizontal
   scaling, and two instances must not share a database.
@@ -274,7 +312,9 @@ been deployed to a cloud provider.
   capabilities. Use TLS at a reverse proxy.
 - **No periodic save.** A session is saved when it is created, evicted, shut down gracefully, after
   a Game Master event, or on request. A killed process loses what happened since.
-- **Nothing advances time by itself.** A round ends when a message arrives after its end time.
+- **The clock is the production server's.** It tells every loaded game the time once a second
+  (`SESSION_TICK_MS`), which is what ends rounds. The development servers (`sessions:dev`,
+  `server:dev`) have no such clock: there a round ends when a message arrives after its end time.
 - **The safety validator is a rule list, in English.** It refuses what it recognises. It does not
   know the place a game is played and does not make outdoor play safe. See [SAFETY.md](./SAFETY.md).
 - **The Game Master is narrow.** In testing the local model almost always chose to extend the
@@ -298,7 +338,7 @@ what a pull request needs.
 
 **Advanced contributions**
 
-- A browser game client that speaks the WebSocket protocol.
+- Tests for the website's game room in a real browser, and trying it on real phones.
 - Making Ice & Fire, Treasure Hunt or Nature Challenge playable in the engine.
 - A new deterministic game event, end to end.
 - A new read-only Game Master tool.

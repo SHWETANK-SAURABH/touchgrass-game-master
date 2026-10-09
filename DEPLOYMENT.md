@@ -36,16 +36,58 @@ realtime broadcast → persistence.** The model never changes a game.
 
 ### What is deployed
 
-| Piece                     | Entry point                     | Image               |
-| ------------------------- | ------------------------------- | ------------------- |
-| **Game server**           | `packages/server/src/main.ts`   | `Dockerfile.server` |
-| Web app (landing, health) | `apps/web` (Next.js standalone) | `Dockerfile`        |
+| Piece                 | Entry point                     | Image               |
+| --------------------- | ------------------------------- | ------------------- |
+| **Game server**       | `packages/server/src/main.ts`   | `Dockerfile.server` |
+| Website (games, play) | `apps/web` (Next.js standalone) | `Dockerfile`        |
 
 The game server is the production path. It is the only entry point that has multiplayer, the Game
 Master, tools, persistence and observability together: it wraps `startSessionServer`, which the
 development command `npm run sessions:dev` also uses. `npm run server:dev` and
-`npm run realtime:dev` are single-game development servers and are not for deployment. The web app
-is a separate, optional process; it does not talk to the game server.
+`npm run realtime:dev` are single-game development servers and are not for deployment.
+
+The website is a separate, optional process. Given `GAME_SERVER_URL` and the game server's
+`ADMIN_TOKEN`, it lets people create and play games: its server side calls `POST /admin/sessions`,
+and browsers then connect to the game server's WebSocket address directly (`GAME_SERVER_WS_URL` if
+that differs from `GAME_SERVER_URL`, for example `wss://…` behind a TLS proxy). The admin token
+stays on the site's server. Anyone who can open the site can create a game, so limit who can reach
+it or put a rate limit in front of it. This pairing has been run on a developer machine only.
+
+### The website on Vercel
+
+The website can be hosted on Vercel. **The game server cannot**: it holds WebSocket connections and
+every game in memory, and runs a clock, so it needs a long-running process (the Docker image above,
+on any host that runs containers). Vercel hosts the pages and the two small routes that reach it.
+
+This setup is configured and builds locally with `next build`. It has **not** been deployed to
+Vercel or tested there.
+
+1. Import the repository in Vercel and set **Root Directory** to `apps/web`. Leave the build and
+   install commands at their defaults: Vercel installs the npm workspace from the repository root,
+   and `apps/web/vercel.json` names the framework.
+2. Use Node.js 22 or newer (Project Settings, Build and Deployment).
+3. Set the environment variables below, then deploy.
+
+| Variable             | Value                                                                       |
+| -------------------- | --------------------------------------------------------------------------- |
+| `GAME_SERVER_URL`    | The game server's public `https://` address                                 |
+| `ADMIN_TOKEN`        | The same value the game server was started with. Mark it sensitive          |
+| `GAME_SERVER_WS_URL` | Only if browsers use a different address from `GAME_SERVER_URL` (`wss://…`) |
+
+Things that differ from running it yourself:
+
+- **The game server must be served over TLS.** Vercel serves the site over https, and a browser
+  will not open a `ws://` connection from an https page. With a `ws://` address the site says
+  playing is not set up, instead of failing when someone joins.
+- **The game server must be reachable from the internet**, both by Vercel (to create a game) and by
+  players' browsers (to play). `SERVER_HOST=0.0.0.0` behind a TLS reverse proxy.
+- **Without the variables the site still deploys.** It shows the games and their rules and says
+  that games cannot be started.
+- **The site is public, so anyone can create a game on your game server.** There are no accounts
+  and no rate limit. Use Vercel's deployment protection or firewall rules if that matters.
+- **The Game Master status box** reports whether the site can reach `MODEL_BASE_URL`. On Vercel
+  that is not your local Ollama, so it reads as not running unless you point it at a reachable
+  runtime. Twists in a game come from the game server's own model settings, not from this.
 
 The game server process owns every WebSocket connection, is the only process that connects to
 MongoDB, and is the only process that calls the model runtime.
@@ -105,6 +147,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"     
 | `SESSION_SWEEP_MS`         | How often to look for sessions to evict              | 1 minute                 |
 | `WS_HEARTBEAT_MS`          | Ping interval for attached sockets; `0` turns it off | `30000`                  |
 | `SHUTDOWN_TIMEOUT_MS`      | A shutdown not finished by then is abandoned         | `25000`                  |
+| `SESSION_TICK_MS`          | How often games are told the time; `0` turns it off  | `1000`                   |
 | `GAME_MASTER_ENABLED`      | Give the games a Game Master                         | `false`                  |
 | `GAME_MASTER_TIMEOUT_MS`   | How long one turn may wait for the model             | `20000`                  |
 | `GAME_MASTER_TOOLS`        | Read-only tools, e.g. `game_history,game_rules`      | none                     |

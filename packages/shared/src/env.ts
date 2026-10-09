@@ -52,6 +52,19 @@ export const serverEnvSchema = z
     MODEL_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
     MODEL_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.8),
 
+    // --- the web app's link to the game server ----------------------------
+    // All optional. Without GAME_SERVER_URL and ADMIN_TOKEN the site still
+    // shows the catalogue, and says that playing is not set up.
+    /** Where the web app's own server reaches the game server, e.g. http://127.0.0.1:3001. */
+    GAME_SERVER_URL: httpUrl.optional(),
+    /** Where a player's browser reaches it. Defaults to GAME_SERVER_URL as ws:// or wss://. */
+    GAME_SERVER_WS_URL: z
+      .string()
+      .regex(/^wss?:\/\/[^\s/]+(\/[^\s]*)?$/, 'must be a ws:// or wss:// URL')
+      .optional(),
+    /** The game server's admin token. Used on the server only; never sent to a browser. */
+    ADMIN_TOKEN: z.string().min(32).optional(),
+
     // --- not read by the web app ------------------------------------------
     // The game server validates MONGODB_URI and SENTRY_DSN itself, in
     // packages/server. Nothing reads REDIS_URL: Redis is not built.

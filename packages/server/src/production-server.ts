@@ -29,8 +29,8 @@ import { type SessionServer, type SessionServerError, startSessionServer } from 
  *
  * This module is the multi-session server with the things only a deployment
  * needs put around it: health answers, a way for an operator to create a
- * session without a terminal, the eviction sweep on a timer, and a shutdown
- * that finishes or gives up within a known time. It adds no game rule, and the
+ * session without a terminal, the eviction sweep and the game clock on timers,
+ * and a shutdown that finishes or gives up within a known time. It adds no game rule, and the
  * path from a model's proposal to a game is exactly what it was.
  *
  * It answers plain HTTP only for the handful of paths above. Every answer is a
@@ -79,7 +79,7 @@ export interface ProductionServer {
    * Stops gracefully, within the configured time:
    *
    *   1. readiness turns to `shutting_down`, so a load balancer stops sending;
-   *   2. the eviction sweep stops;
+   *   2. the eviction sweep and the game clock stop;
    *   3. the session server shuts down: new connections and new Game Master
    *      turns are refused, every room is closed, every session with unsaved
    *      changes is saved once, the store is closed, and the listener stops;
@@ -339,8 +339,31 @@ export async function startProductionServer(
   }, config.lifecycle.sweepMs);
   sweep.unref();
 
+  // The game clock. The engine never reads a clock: a round ends when it is
+  // told the time is past the round's end. Without this, that only happens when
+  // a player or the host sends something, so a round nobody acts in would never
+  // end and a finished game would never be declared. This tells every loaded
+  // game the time, through the room's own trusted `tick`, which changes
+  // nothing and tells nobody unless something was actually due.
+  const clockTick =
+    config.tickMs > 0
+      ? setInterval(() => {
+          if (stopping) return;
+          for (const info of running.registry.sessions()) {
+            if (info.state === 'closing') continue;
+            try {
+              running.registry.get(info.sessionId)?.room.tick(contextAt(clock));
+            } catch (error) {
+              reporter.captureError(error, { area: 'server', stage: 'tick' });
+            }
+          }
+        }, config.tickMs)
+      : undefined;
+  clockTick?.unref();
+
   const stop = async (): Promise<ProductionShutdownResult> => {
     clearInterval(sweep);
+    clearInterval(clockTick);
     const finished = await within(config.shutdownTimeoutMs, running.shutdown());
     const timedOut = finished === 'TIMED_OUT';
     const saved = !timedOut && finished.ok;
