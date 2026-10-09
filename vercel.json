@@ -11,7 +11,7 @@
     "game": {
       "root": ".",
       "runtime": "container",
-      "entrypoint": "Dockerfile.server"
+      "entrypoint": "Dockerfile.vercel"
     }
   },
   "rewrites": [

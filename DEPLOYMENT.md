@@ -61,7 +61,7 @@ it or put a rate limit in front of it. This pairing has been run on a developer 
 | Service | What it is                                      | Public paths    |
 | ------- | ----------------------------------------------- | --------------- |
 | `web`   | The website, `apps/web`, built as Next.js       | Everything else |
-| `game`  | The game server, built from `Dockerfile.server` | `/sessions/…`   |
+| `game`  | The game server, built from `Dockerfile.vercel` | `/sessions/…`   |
 
 `web` reaches `game` over a service binding: Vercel sets `GAME_SERVER_URL` for it, so do not set
 that variable yourself. Only the WebSocket path is public. `/admin/…`, `/healthz` and `/readyz` are
