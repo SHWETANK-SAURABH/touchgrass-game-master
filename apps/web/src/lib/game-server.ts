@@ -22,7 +22,12 @@ export type PlayUnavailableReason =
 
 export type PlayConfig =
   | { readonly enabled: true; readonly wsUrl: string }
-  | { readonly enabled: false; readonly reason: PlayUnavailableReason };
+  | {
+      readonly enabled: false;
+      readonly reason: PlayUnavailableReason;
+      /** What is missing, for whoever runs the site. Names of settings, never their values. */
+      readonly problems?: readonly string[];
+    };
 
 export type CreateSessionResult =
   | {
@@ -77,6 +82,34 @@ export function browserAddress(settings: Settings, site?: SiteOrigin): string | 
 
 const baseOf = (settings: Settings): string => (settings.GAME_SERVER_URL ?? '').replace(/\/+$/, '');
 
+/** What stops the site from being set up for play, in words. Names only, no values. */
+export function setupProblems(settings: Settings, site?: SiteOrigin): string[] {
+  const problems: string[] = [];
+  if (!settings.GAME_SERVER_URL) problems.push('GAME_SERVER_URL is not set.');
+  if (!settings.ADMIN_TOKEN) problems.push('ADMIN_TOKEN is not set.');
+  const wsUrl = browserAddress(settings, site);
+  if (settings.GAME_SERVER_WS_URL === SAME_ORIGIN && !wsUrl) {
+    problems.push(
+      "GAME_SERVER_WS_URL is same-origin, but the site's own address could not be read.",
+    );
+  }
+  if (site?.secure && wsUrl?.startsWith('ws://')) {
+    problems.push(
+      'Players would connect over ws://, which a browser refuses on an https site. Set GAME_SERVER_WS_URL to same-origin or to a wss:// address.',
+    );
+  }
+  return problems;
+}
+
+/** The settings a failed parse complained about, as "NAME: what is wrong". */
+export function invalidSettings(error: unknown): string[] {
+  const text = error instanceof Error ? error.message : '';
+  const found = [...text.matchAll(/^ {2}([A-Z][A-Z0-9_]*): (.+)$/gm)].map(
+    (match) => `${match[1] ?? ''} is not valid: ${match[2] ?? ''}`,
+  );
+  return found.length > 0 ? found : ['A setting is not valid.'];
+}
+
 /**
  * Whether games can be played from this site right now.
  *
@@ -90,11 +123,9 @@ export async function getPlayConfig(
   site?: SiteOrigin,
 ): Promise<PlayConfig> {
   const wsUrl = browserAddress(settings, site);
-  if (!settings.GAME_SERVER_URL || !settings.ADMIN_TOKEN || !wsUrl) {
-    return { enabled: false, reason: 'NOT_CONFIGURED' };
-  }
-  if (site?.secure && wsUrl.startsWith('ws://')) {
-    return { enabled: false, reason: 'NOT_CONFIGURED' };
+  const problems = setupProblems(settings, site);
+  if (problems.length > 0 || !wsUrl) {
+    return { enabled: false, reason: 'NOT_CONFIGURED', problems };
   }
   try {
     const ready = await request(`${baseOf(settings)}/readyz`, {

@@ -16,7 +16,9 @@ import { Loading, Notice, buttonPrimary, buttonSecondary, linkStyle } from './ui
  */
 
 type Availability =
-  { phase: 'checking' } | { phase: 'available' } | { phase: 'unavailable'; reason: string };
+  | { phase: 'checking' }
+  | { phase: 'available' }
+  | { phase: 'unavailable'; reason: string; problems: string[] };
 
 const UNAVAILABLE: Record<string, { title: string; body: string }> = {
   NOT_CONFIGURED: {
@@ -48,15 +50,25 @@ export function StartGame({ gameId, gameName }: { gameId: string; gameName: stri
     const load = async (): Promise<void> => {
       try {
         const response = await fetch('/api/play', { cache: 'no-store' });
-        const config = (await response.json()) as { enabled: boolean; reason?: string };
+        const config = (await response.json()) as {
+          enabled: boolean;
+          reason?: string;
+          problems?: string[];
+        };
         if (cancelled) return;
         setAvailability(
           config.enabled
             ? { phase: 'available' }
-            : { phase: 'unavailable', reason: config.reason ?? 'SERVER_UNAVAILABLE' },
+            : {
+                phase: 'unavailable',
+                reason: config.reason ?? 'SERVER_UNAVAILABLE',
+                problems: Array.isArray(config.problems) ? config.problems : [],
+              },
         );
       } catch {
-        if (!cancelled) setAvailability({ phase: 'unavailable', reason: 'SERVER_UNAVAILABLE' });
+        if (!cancelled) {
+          setAvailability({ phase: 'unavailable', reason: 'SERVER_UNAVAILABLE', problems: [] });
+        }
       }
     };
     void load();
@@ -123,6 +135,16 @@ export function StartGame({ gameId, gameName }: { gameId: string; gameName: stri
         }
       >
         {message?.body}
+        {availability.problems.length > 0 && (
+          <div className="mt-3">
+            <p className="font-semibold">For whoever runs this site:</p>
+            <ul className="mt-1 list-disc space-y-1 pl-5">
+              {availability.problems.map((problem) => (
+                <li key={problem}>{problem}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Notice>
     );
   }

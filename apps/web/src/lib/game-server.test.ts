@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { listGameDefinitions } from '@touchgrass/game-definitions';
-import { browserAddress, createSession, getPlayConfig, siteOriginOf } from './game-server';
+import {
+  browserAddress,
+  createSession,
+  getPlayConfig,
+  invalidSettings,
+  siteOriginOf,
+} from './game-server';
 import { PLAYABLE_GAME_IDS, isPlayable, playableFirst } from './playable';
 
 // Not a credential: a marker that must never appear in anything sent to a browser.
@@ -82,6 +88,22 @@ describe('browserAddress', () => {
   });
 });
 
+describe('invalidSettings', () => {
+  it('names the settings a failed parse complained about', () => {
+    const error = new Error(
+      'Invalid environment configuration:\n  ADMIN_TOKEN: Too small\n  MODEL_BASE_URL: must be a URL\n\nCopy .env.example',
+    );
+    expect(invalidSettings(error)).toEqual([
+      'ADMIN_TOKEN is not valid: Too small',
+      'MODEL_BASE_URL is not valid: must be a URL',
+    ]);
+  });
+
+  it('says something even when it cannot tell which', () => {
+    expect(invalidSettings('nope')).toEqual(['A setting is not valid.']);
+  });
+});
+
 describe('siteOriginOf', () => {
   it('reads the address a proxy forwarded', () => {
     const request = new Request('http://internal.invalid:3000/api/play', {
@@ -101,11 +123,19 @@ describe('siteOriginOf', () => {
 describe('getPlayConfig', () => {
   it('says playing is not set up when the address or the token is missing', async () => {
     const { fetch, calls } = fakeFetch(() => json(200, {}));
-    expect(await getPlayConfig({}, fetch)).toEqual({ enabled: false, reason: 'NOT_CONFIGURED' });
-    expect(await getPlayConfig({ GAME_SERVER_URL: settings.GAME_SERVER_URL }, fetch)).toEqual({
+    expect(await getPlayConfig({}, fetch)).toEqual({
       enabled: false,
       reason: 'NOT_CONFIGURED',
+      problems: ['GAME_SERVER_URL is not set.', 'ADMIN_TOKEN is not set.'],
     });
+    const half = await getPlayConfig({ GAME_SERVER_URL: settings.GAME_SERVER_URL }, fetch);
+    expect(half).toEqual({
+      enabled: false,
+      reason: 'NOT_CONFIGURED',
+      problems: ['ADMIN_TOKEN is not set.'],
+    });
+    // It names settings and never repeats a value.
+    expect(JSON.stringify(half)).not.toContain('example-host');
     expect(calls).toHaveLength(0);
   });
 
@@ -123,10 +153,11 @@ describe('getPlayConfig', () => {
   it('is not set up when an https page would have to open a ws:// connection', async () => {
     const site = { host: 'play.example-host.invalid', secure: true };
     const { fetch, calls } = fakeFetch(() => json(200, {}));
-    expect(await getPlayConfig(settings, fetch, site)).toEqual({
-      enabled: false,
-      reason: 'NOT_CONFIGURED',
-    });
+    const refused = await getPlayConfig(settings, fetch, site);
+    expect(refused.enabled).toBe(false);
+    expect(refused).toMatchObject({ reason: 'NOT_CONFIGURED' });
+    expect(JSON.stringify(refused)).toContain('ws://, which a browser refuses');
+    expect(JSON.stringify(refused)).not.toContain(ADMIN);
     expect(calls).toHaveLength(0);
     const secure = { ...settings, GAME_SERVER_URL: 'https://example-host.invalid' };
     expect(await getPlayConfig(secure, fetch, site)).toEqual({

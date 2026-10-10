@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerEnv } from '@touchgrass/shared';
-import { getPlayConfig, siteOriginOf } from '@/lib/game-server';
+import { getPlayConfig, invalidSettings, siteOriginOf } from '@/lib/game-server';
 
 /**
  * Whether games can be played from this site right now, and where a browser
@@ -12,9 +12,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   let env;
   try {
     env = getServerEnv();
-  } catch {
+  } catch (error) {
     return NextResponse.json(
-      { enabled: false, reason: 'NOT_CONFIGURED' },
+      { enabled: false, reason: 'NOT_CONFIGURED', problems: invalidSettings(error) },
       { headers: { 'cache-control': 'no-store' } },
     );
   }
