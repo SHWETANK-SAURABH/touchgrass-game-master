@@ -55,9 +55,6 @@ export async function GET(): Promise<NextResponse> {
         gameIds: GAME_IDS,
         hazardCategories: HAZARD_CATEGORY_IDS.length,
       },
-      // Not in this web app. Realtime play, the Game Master and persistence are
-      // in the game server, which this site does not connect to.
-      notImplemented: ['game-ui'],
     },
     {
       status: 200,
